@@ -28,5 +28,8 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run the default task
+      - name: Specs and RuboCop
         run: bundle exec rake
+      # The same specs again, plus the ones that need Docker: Vector, and stand-ins for S3 and Google Cloud Storage.
+      - name: End to end, with Docker
+        run: shipper/test

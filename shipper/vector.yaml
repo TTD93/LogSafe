@@ -1,0 +1,77 @@
+# Ships the logs of labelled Docker containers on this server to your storage.
+# Runs on every app server, together with ONE of to-s3.yaml, to-gcs.yaml or to-folder.yaml.
+# The Logsafe merge job then makes one file per day.
+#
+# A container is shipped when it has a `logs` label and Docker is told to write
+# that label into its log file:
+#   docker run --label logs=shop-prod-web --log-opt labels=logs ...
+
+data_dir: /var/lib/vector # where Vector remembers how far it has read, and buffers
+
+sources:
+  docker:
+    type: file
+    # Docker's own log files, rotated ones included, so nothing is missed while Vector is down.
+    include: ["/var/lib/docker/containers/*/*-json.log*"]
+    max_line_bytes: 1048576 # Docker escapes a 16 KB line to up to ~100 KB; the default would drop it
+
+transforms:
+  lines:
+    type: remap
+    inputs: [docker]
+    source: |
+      entry = object(parse_json(.message) ?? null) ?? {}
+      line = entry.log
+      stream = entry.attrs.logs
+      if !is_string(line) { # not a line Docker wrote: keep it whole rather than lose it
+        line = .message
+        stream = "unparsed"
+      }
+      if !is_string(stream) { abort } # a container without the label
+
+      # The time Docker saw the line, at a fixed width, so sorting the text sorts by time.
+      at = parse_timestamp(entry.time, "%+") ?? now()
+      . = {
+        "stream": stream,
+        "day": format_timestamp!(at, "%F"),
+        "message": format_timestamp!(at, "%Y-%m-%dT%H:%M:%S%.9fZ") + " " + replace(string!(line), r'\n$', ""),
+        # For to-folder.yaml, which starts a new file per server every minute.
+        "host": get_hostname() ?? "server",
+        "slot": format_timestamp!(now(), "%Y%m%dT%H%M")
+      }
+
+tests:
+  - name: a line from a labelled container
+    inputs:
+      - insert_at: lines
+        type: log
+        log_fields:
+          message: '{"log":"Started GET /\n","stream":"stdout","attrs":{"logs":"shop-prod-web"},"time":"2026-11-24T23:59:59.5Z"}'
+    outputs:
+      - extract_from: lines
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.message, "2026-11-24T23:59:59.500000000Z Started GET /")
+              assert_eq!(.stream, "shop-prod-web")
+              assert_eq!(.day, "2026-11-24")
+  - name: a container without the label is not shipped
+    inputs:
+      - insert_at: lines
+        type: log
+        log_fields:
+          message: '{"log":"proxy noise\n","stream":"stdout","time":"2026-11-24T10:00:00Z"}'
+    no_outputs_from: [lines]
+  - name: a line that is not Docker's is kept
+    inputs:
+      - insert_at: lines
+        type: log
+        log_fields:
+          message: '{"log":"cut off in the mid'
+    outputs:
+      - extract_from: lines
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.stream, "unparsed")
+              assert!(ends_with(string!(.message), "Z {\"log\":\"cut off in the mid"))
