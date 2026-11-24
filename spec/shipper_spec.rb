@@ -11,6 +11,8 @@ RSpec.describe "from Docker through Vector to one file a day",
   let(:config) { Dir.mktmpdir("logsafe-vector") }
   let(:shipper) { File.expand_path("../shipper", __dir__) }
   let(:run_options) { [] }
+  let(:suffix) { "" }
+  let(:part_line) { /\A\d{4}-\d{2}-\d{2}T/ }
 
   before { stub_const("Logsafe::Storage::Folder::SETTLE", 0) }
 
@@ -42,20 +44,34 @@ RSpec.describe "from Docker through Vector to one file a day",
     File.write(File.join(config, "sink.yaml"), text)
   end
 
-  def shipped
+  # { key of a part => its lines }
+  def parts
     Dir.mktmpdir do |dir|
-      Logsafe.storage.keys("parts/e2e/").flat_map do |key|
+      Logsafe.storage.keys("parts/e2e/").to_h do |key|
         Logsafe.storage.fetch(key, File.join(dir, "part"))
         data = File.binread(File.join(dir, "part"))
-        (data.start_with?(Logsafe::GZIP) ? Zlib.gunzip(data) : data).lines
-      end.uniq.size
+        [key, (data.start_with?(Logsafe::GZIP) ? Zlib.gunzip(data) : data).lines]
+      end
     end
+  end
+
+  def part_lines
+    parts.values.flatten
+  end
+
+  # Counted by what the lines say: a line that Vector read twice is encrypted differently each time.
+  def shipped
+    parts.flat_map do |key, lines|
+      line_keys = Logsafe::Cipher.day_keys(Logsafe.keys, *key.split("/")[1, 2])
+      lines.map { |line| Logsafe::Cipher.plain(line, line_keys) }
+    end.uniq.size
   end
 
   def read(key)
     Dir.mktmpdir do |dir|
-      Logsafe.storage.fetch(key, File.join(dir, "day"))
-      Zlib.gunzip(File.binread(File.join(dir, "day"))).lines(chomp: true)
+      Logsafe.storage.fetch(key, day = File.join(dir, "day"))
+      day = Logsafe.decrypt(day, "#{day}.gz") if key.end_with?(".enc")
+      Zlib.gunzip(File.binread(day)).lines(chomp: true)
     end
   end
 
@@ -89,11 +105,12 @@ RSpec.describe "from Docker through Vector to one file a day",
       Logsafe.storage = storage
       ship(sink, changes)
       settle
+      expect(part_lines).to all(match(part_line))
 
       2.times { Logsafe.merge("e2e", today: "9999-12-31") }
 
       days = Logsafe.storage.keys("")
-      expect(days).to all(match(%r{\A\d{4}/\d{2}/e2e\.\d{4}-\d{2}-\d{2}\.log\.gz\z}))
+      expect(days).to all(match(%r{\A\d{4}/\d{2}/e2e\.\d{4}-\d{2}-\d{2}\.log\.gz#{suffix}\z}))
       expect(days.size).to be_between(1, 2) # two if the run crossed midnight UTC
       lines = days.sort.flat_map { |key| read(key) }
       expect(lines).to all(match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z [ab] \d+\z/))
@@ -127,6 +144,20 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
 
     it_behaves_like "shipping", "to-s3.yaml"
+
+    # What Vector encrypts, line by line, the merge job has to open with the same key.
+    context "when encrypted" do
+      let(:key) { Logsafe.generate_key }
+      let(:run_options) { super() + ["-e", "LOGSAFE_KEY=#{key}"] }
+      let(:suffix) { ".enc" }
+
+      before { Logsafe.key = key }
+      after { Logsafe.key = nil }
+
+      let(:part_line) { /\Aenc:/ } # nothing readable in the storage
+
+      it_behaves_like "shipping", "to-s3.yaml"
+    end
   end
 
   # Not Google Cloud Storage: the local stand-in refuses the kind of upload Vector makes, so

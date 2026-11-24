@@ -5,6 +5,8 @@
 # A container is shipped when it has a `logs` label and Docker is told to write
 # that label into its log file:
 #   docker run --label logs=shop-prod-web --log-opt labels=logs ...
+#
+# To encrypt the lines, give Vector the key the app has in Logsafe.key, as LOGSAFE_KEY.
 
 data_dir: /var/lib/vector # where Vector remembers how far it has read, and buffers
 
@@ -19,6 +21,7 @@ transforms:
   lines:
     type: remap
     inputs: [docker]
+    drop_on_error: true # a line that cannot be sealed is dropped, never shipped as it is
     source: |
       entry = object(parse_json(.message) ?? null) ?? {}
       line = entry.log
@@ -31,10 +34,25 @@ transforms:
 
       # The time Docker saw the line, at a fixed width, so sorting the text sorts by time.
       at = parse_timestamp(entry.time, "%+") ?? now()
+      day = format_timestamp!(at, "%F")
+      message = format_timestamp!(at, "%Y-%m-%dT%H:%M:%S%.9fZ") + " " + replace(string!(line), r'\n$', "")
+
+      # With a key the whole line is sealed here, so the storage never holds it in plain text.
+      # Every stream and day gets a key of its own: so few lines share one that their random nonces
+      # are not expected to repeat.
+      secret = get_env_var("LOGSAFE_KEY") ?? ""
+      if secret != "" {
+        nonce = random_bytes(12)
+        master = decode_base64!(secret)
+        assert!(length(master) == 32, "LOGSAFE_KEY is not a key") # hmac would take any, and the app could not read the line
+        key = hmac(string!(stream) + "/" + day, master)
+        message = "enc:" + encode_base64(nonce + encrypt!(message, "CHACHA20-POLY1305", key, nonce))
+      }
+
       . = {
         "stream": stream,
-        "day": format_timestamp!(at, "%F"),
-        "message": format_timestamp!(at, "%Y-%m-%dT%H:%M:%S%.9fZ") + " " + replace(string!(line), r'\n$', ""),
+        "day": day,
+        "message": message,
         # For to-folder.yaml, which starts a new file per server every minute.
         "host": get_hostname() ?? "server",
         "slot": format_timestamp!(now(), "%Y%m%dT%H%M")
