@@ -238,6 +238,35 @@ RSpec.describe Logsafe do
       expect(decrypted.map { |line| line.split.last }).to eq %w[a1 late]
     end
 
+    it "encrypts what was plain before the key was set: a day's file, and the lines of a part" do
+      stub_const("Logsafe::Storage::Folder::SETTLE", 0)
+      described_class.key = nil
+      part "web/2026-11-19/a.log", "2026-11-19T10:00:00.000000001Z before"
+      2.times { merge }
+      part "web/2026-11-20/a.log.gz", "2026-11-20T10:00:00.000000001Z a1", "", gzip: true
+      part "stray", "not a part: the merge passes it by, and so must this"
+      described_class.key = key
+
+      described_class.reencrypt
+
+      expect(files).to eq ["2026/11/web.2026-11-19.log.gz.enc", "parts/stray", "parts/web/2026-11-20/a.log.gz"]
+      expect(decrypted(files.first)).to eq ["2026-11-19T10:00:00.000000001Z before"]
+      expect(Zlib.gunzip(File.binread(File.join(root, files.last)))).to match(/\Aenc:\S+\n\n\z/)
+      2.times { merge }
+      expect(decrypted).to eq ["", "2026-11-20T10:00:00.000000001Z a1"]
+    end
+
+    it "encrypts a plain line as it is, to its last byte" do
+      stub_const("Logsafe::Storage::Folder::SETTLE", 0)
+      part "web/2026-11-20/a.log", text: "2026-11-20T10:00:00.000000001Z from a terminal\r\n"
+
+      described_class.reencrypt
+
+      line_keys = Logsafe::Cipher.day_keys(described_class.keys, "web", "2026-11-20")
+      expect(Logsafe::Cipher.plain(File.read(File.join(root, parts.first)), line_keys))
+        .to eq "2026-11-20T10:00:00.000000001Z from a terminal\r\n"
+    end
+
     context "when the key is changed" do
       let(:new_key) { described_class.generate_key }
 
@@ -257,6 +286,47 @@ RSpec.describe Logsafe do
 
         expect(files).to eq [enc]
         expect(decrypted.map { |line| line.split.last }).to eq %w[a1 old new]
+      end
+
+      context "when everything is encrypted again" do
+        let(:stored) { files.to_h { |name| [name, File.binread(File.join(root, name))] } }
+
+        before do
+          stub_const("Logsafe::Storage::Folder::SETTLE", 0)
+          allow(Logsafe::Reencrypt).to receive(:warn)
+          Logsafe::ReencryptJob.logger = Logger.new(nil)
+          Logsafe::ReencryptJob.queue_adapter = :inline
+          part "web/2026-11-20/z.log.gz", sealed("2026-11-20T10:00:00.000000004Z gz"), "plain", gzip: true
+        end
+
+        it "needs the old key no more, in the day's file or in the parts" do
+          described_class.old_keys = key
+          Logsafe::ReencryptJob.perform_later
+          described_class.old_keys = nil
+
+          expect(decrypted.size).to eq 1
+          2.times { merge }
+          expect(files).to eq [enc]
+          expect(decrypted.map { |line| line.split.last }).to eq %w[a1 old new gz plain]
+        end
+
+        it "leaves what the new key opens as it is, when run again" do
+          described_class.old_keys = key
+          described_class.reencrypt
+          before = stored
+
+          described_class.reencrypt
+
+          expect(stored).to eq before
+        end
+
+        it "fails without the old key, and changes nothing" do
+          before = stored
+
+          expect { described_class.reencrypt }.to raise_error(Logsafe::Error, /not encrypted with this key or an old/)
+          expect(stored).to eq before
+          expect(Logsafe::Reencrypt).to have_received(:warn).with(/could not encrypt #{enc}/)
+        end
       end
 
       it "fails without the old key, and keeps the file and the part" do

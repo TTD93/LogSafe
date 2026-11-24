@@ -5,6 +5,9 @@
 - Encryption: with a key in `Logsafe.key`, and in `LOGSAFE_KEY` for Vector, the parts and the daily
   files are encrypted. `logsafe key` makes a key and `logsafe decrypt` reads what it encrypted.
 - `shipper/start` does not start Vector with a key that is not one.
+- Changing the key: `Logsafe.old_keys` keeps what an old key encrypted readable, and
+  `Logsafe::ReencryptJob` encrypts all of it again with the new key, after which the old key can go.
+  The same job encrypts what was stored before there was a key.
 
 ## [0.1.0] - 2026-11-24
 
