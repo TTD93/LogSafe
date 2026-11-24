@@ -1,0 +1,21 @@
+# Google Cloud Storage.
+# The service account key comes from the file GOOGLE_APPLICATION_CREDENTIALS points to.
+sinks:
+  storage:
+    type: gcp_cloud_storage
+    inputs: [lines]
+    bucket: my-logs
+    key_prefix: "parts/{{ stream }}/{{ day }}/"
+    encoding:
+      codec: text
+    framing:
+      method: newline_delimited
+    compression: gzip
+    batch:
+      timeout_secs: 60 # the most that is lost if this server's disk is destroyed
+    buffer:
+      type: disk # lines wait here while the storage can't be reached
+      max_size: 1073741824
+      when_full: block
+    acknowledgements:
+      enabled: true # a line counts as read only once it is safely in the buffer
