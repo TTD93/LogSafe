@@ -72,6 +72,13 @@ module Logsafe
         end
       end
 
+      # A line sealed the way the shipper does it, without its line break.
+      def seal_line(text, key)
+        cipher = cipher("chacha20-poly1305", :encrypt, key)
+        nonce = cipher.random_iv
+        LINE + [nonce + cipher.update(text) + cipher.final + cipher.auth_tag].pack("m0")
+      end
+
       # A line as it was before the shipper sealed it; a line that was never sealed, as it is.
       def plain(line, keys)
         line.start_with?(LINE) ? "#{line(line.delete_prefix(LINE), keys)}\n" : line

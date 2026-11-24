@@ -14,6 +14,8 @@ module Logsafe
   class Error < StandardError; end
 
   autoload :MergeJob, "logsafe/merge_job"
+  autoload :Reencrypt, "logsafe/reencrypt"
+  autoload :ReencryptJob, "logsafe/reencrypt_job"
 
   PARTS = "parts/"
   DATE = /\A\d{4}-\d{2}-\d{2}\z/
@@ -54,6 +56,16 @@ module Logsafe
     # Turns a day's encrypted file back into its gzip.
     def decrypt(from, into)
       Cipher.unseal(from, into, keys)
+    end
+
+    # Encrypts with the key in use what the old keys encrypted and what was never encrypted: every
+    # day's file and every part. When it has run without failing, the old keys can go.
+    # A day's plain file goes the way of a part: the merge takes it into the encrypted file, and its
+    # second run removes it, having found all of it there.
+    def reencrypt
+      Reencrypt.call(storage, @key || raise(Error, "Logsafe.key is not set"), @old_keys.to_a) do |stream, day|
+        2.times { merge_day(stream, day, []) }
+      end
     end
 
     # Merges every finished day (UTC) of the given streams, or of all streams. Safe to run again at
