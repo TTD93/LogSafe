@@ -6,7 +6,8 @@
 # that label into its log file:
 #   docker run --label logs=shop-prod-web --log-opt labels=logs ...
 #
-# To encrypt the lines, give Vector the key the app has in Logsafe.key, as LOGSAFE_KEY.
+# To encrypt the lines, give Vector the key the app has in Logsafe.key, as LOGSAFE_KEY, and start
+# Vector with the `start` script beside this file: it refuses a key that is not one.
 
 data_dir: /var/lib/vector # where Vector remembers how far it has read, and buffers
 
@@ -21,7 +22,7 @@ transforms:
   lines:
     type: remap
     inputs: [docker]
-    drop_on_error: true # a line that cannot be sealed is dropped, never shipped as it is
+    drop_on_error: true # a line that cannot be sealed is dropped, never shipped as it is; `start` keeps it from coming to that
     source: |
       entry = object(parse_json(.message) ?? null) ?? {}
       line = entry.log

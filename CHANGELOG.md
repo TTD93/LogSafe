@@ -4,6 +4,7 @@
   be called from several threads.
 - Encryption: with a key in `Logsafe.key`, and in `LOGSAFE_KEY` for Vector, the parts and the daily
   files are encrypted. `logsafe key` makes a key and `logsafe decrypt` reads what it encrypted.
+- `shipper/start` does not start Vector with a key that is not one.
 
 ## [0.1.0] - 2026-11-24
 

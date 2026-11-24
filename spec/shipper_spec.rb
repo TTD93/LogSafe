@@ -42,6 +42,7 @@ RSpec.describe "from Docker through Vector to one file a day",
     text = File.read(File.join(shipper, sink))
     changes.each { |from, to| text.sub!(from, to) || raise("#{from.inspect} is not in #{sink}") }
     File.write(File.join(config, "sink.yaml"), text)
+    FileUtils.cp(File.join(shipper, "start"), config)
   end
 
   # { key of a part => its lines }
@@ -83,7 +84,8 @@ RSpec.describe "from Docker through Vector to one file a day",
     configure(sink, [a, b, noise], changes)
     vector = docker "run", "-d", "--label", "logsafe-e2e", "--network", "logsafe-test", *run_options,
                     "-v", "#{config}:/etc/vector:ro", "-v", "/var/lib/vector",
-                    "-v", "/var/lib/docker/containers:/var/lib/docker/containers:ro", ENV.fetch("LOGSAFE_TEST_VECTOR"),
+                    "-v", "/var/lib/docker/containers:/var/lib/docker/containers:ro", "--entrypoint", "sh",
+                    ENV.fetch("LOGSAFE_TEST_VECTOR"), "/etc/vector/start",
                     "--config", "/etc/vector/vector.yaml", "--config", "/etc/vector/sink.yaml"
 
     docker "start", a, b, noise
@@ -177,5 +179,28 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
 
     it_behaves_like "shipping", "to-folder.yaml"
+  end
+end
+
+# Vector would start with any key, and then drop the lines it could not encrypt.
+RSpec.describe "shipper/start", skip: ("needs Docker, run shipper/test" unless ENV["LOGSAFE_TEST_VECTOR"]) do
+  def start(key)
+    Open3.capture2e("docker", "run", "--rm", "-e", "LOGSAFE_KEY=#{key}",
+                    "-v", "#{File.expand_path("../shipper", __dir__)}:/etc/vector:ro", "--entrypoint", "sh",
+                    ENV.fetch("LOGSAFE_TEST_VECTOR"), "/etc/vector/start", "--version")
+  end
+
+  it "does not start Vector with a key that is not one" do
+    not_keys = ["secret", "c2VjcmV0", Logsafe.generate_key[0, 43], "\"#{Logsafe.generate_key}\"",
+                "#{Logsafe.generate_key},", "#{"A" * 42}B="] # the last decodes for some, but not for Vector
+    not_keys.each do |key|
+      output, status = start(key)
+      expect(status).not_to be_success, "started with #{key.inspect}"
+      expect(output).to match(/LOGSAFE_KEY is not a key.*Vector was not started/)
+    end
+  end
+
+  it "starts Vector with a key, and without one" do
+    [Logsafe.generate_key, ""].each { |key| expect(start(key).first).to start_with("vector 0.62") }
   end
 end
