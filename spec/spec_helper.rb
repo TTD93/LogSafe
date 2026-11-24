@@ -2,6 +2,7 @@
 
 require "logsafe"
 require "logger"
+require "open3"
 require "zlib"
 
 RSpec.configure do |config|
