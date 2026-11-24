@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- `Logsafe::Web`: a page to read and search the logs in the browser, by day, stream, level and words.
+  A Rack app that you mount in your routes, behind your own sign-in.
 - The merge job fetches several parts at a time. A storage object of your own must allow `fetch` to
   be called from several threads.
 - Encryption: with a key in `Logsafe.key`, and in `LOGSAFE_KEY` for Vector, the parts and the daily
