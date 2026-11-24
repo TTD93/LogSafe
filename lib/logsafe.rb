@@ -16,6 +16,8 @@ module Logsafe
   autoload :MergeJob, "logsafe/merge_job"
   autoload :Reencrypt, "logsafe/reencrypt"
   autoload :ReencryptJob, "logsafe/reencrypt_job"
+  autoload :Search, "logsafe/search"
+  autoload :Web, "logsafe/web"
 
   PARTS = "parts/"
   DATE = /\A\d{4}-\d{2}-\d{2}\z/
@@ -79,6 +81,12 @@ module Logsafe
         e
       end
       raise failures.first if failures.any?
+    end
+
+    # The lines of these keys of one stream and day, decrypted and sorted, in a file in dir. Returns its path.
+    def lines(stream, day, sources, dir)
+      gather(sources, dir)
+      sort(dir, stream, day)
     end
 
     private
