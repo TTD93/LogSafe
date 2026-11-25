@@ -9,6 +9,7 @@ RSpec.describe Logsafe::Web do
   before do
     Logsafe.storage = root
     allow(Logsafe::Copies).to receive(:dir).and_return(copies)
+    allow(Logsafe::Copies).to receive(:at_exit) # or the specs would end by sweeping this machine's real copies
     stub_const("Logsafe::Search::LIST_FOR", 0) # the specs change the storage and look again at once
   end
 
@@ -142,6 +143,17 @@ RSpec.describe Logsafe::Web do
     Logsafe::Copies.sweep
     expect(Dir.children(copies).map { |name| File.extname(name) }.uniq).to eq [".lock"]
     expect(shown(day("2026-11-20"))).to eq ["a1"]
+  end
+
+  it "deletes every copy when the process ends" do
+    at_the_end = nil
+    allow(Logsafe::Copies).to receive(:at_exit) { |&block| at_the_end = block }
+    Logsafe::Copies.instance_variable_set(:@sweeper, nil) # as in a process that has not searched yet
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    shown(day("2026-11-20"))
+
+    at_the_end.call
+    expect(Dir.children(copies).map { |name| File.extname(name) }).to eq [".lock"]
   end
 
   it "goes on from where a fetch was cut off" do

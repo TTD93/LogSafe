@@ -11,6 +11,12 @@
 - Changing the key: `Logsafe.old_keys` keeps what an old key encrypted readable, and
   `Logsafe::ReencryptJob` encrypts all of it again with the new key, after which the old key can go.
   The same job encrypts what was stored before there was a key.
+- A stream name is made of letters, digits, `.`, `_` and `-`. Vector ships lines with any other
+  `logs` label as the stream `unparsed`: with a slash in the name they were never merged.
+- Two merges at the same time no longer fail when both remove the same parts, and parts in Google
+  Cloud Storage are removed several at a time.
+- The page's copies of the days searched are deleted when the app stops.
+- Needs Ruby 3.3 or newer.
 
 ## [0.1.0] - 2026-11-24
 

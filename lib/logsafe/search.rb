@@ -8,6 +8,7 @@ module Logsafe
     LIMIT = 500
     WORDS = 8 # each word is one more pass over the lines
     LIST_FOR = 60 # seconds a listing of the storage is believed: parts come once a minute
+    LISTING = Mutex.new
     LEVELS = { "debug" => "debug", "info" => "info", "warn" => "warn|warning",
                "error" => "error", "fatal" => "fatal" }.freeze
     DAY_FILE = %r{\A\d{4}/\d{2}/([^/]+)\.(\d{4}-\d{2}-\d{2})\.log\.gz(\.enc)?\z}
@@ -42,7 +43,7 @@ module Logsafe
           streams.each do |(stream, day), keys|
             found.concat(matches(stream, Copies.path(stream, day, keys), filters))
           rescue Error => e
-            @listed = nil # it may be the listing that is no longer true
+            LISTING.synchronize { @listed = nil } # it may be the listing that is no longer true
             problems << "#{stream} #{day}: #{e.message}"
           end
           break found if found.size >= LIMIT
@@ -55,12 +56,16 @@ module Logsafe
 
       # Listing every part is the slow part of a search that has its copies, so a listing is used again
       # for a while. A key that is gone by the time it is fetched is noticed there.
+      # One thread at a time: a server's threads share the listings, and a second search that comes
+      # while the storage is being listed waits for that listing and does not ask for its own.
       def listed(prefix)
-        at, keys = (@listed ||= {})[[Logsafe.storage, prefix]]
-        return keys if at && Time.now - at < LIST_FOR
+        LISTING.synchronize do
+          at, keys = (@listed ||= {})[[Logsafe.storage, prefix]]
+          next keys if at && Time.now - at < LIST_FOR
 
-        @listed.delete_if { |_, (time, _)| Time.now - time >= LIST_FOR }
-        (@listed[[Logsafe.storage, prefix]] = [Time.now, Logsafe.storage.keys(prefix)]).last
+          @listed.delete_if { |_, (time, _)| Time.now - time >= LIST_FOR }
+          (@listed[[Logsafe.storage, prefix]] = [Time.now, Logsafe.storage.keys(prefix)]).last
+        end
       end
 
       # The system's tools, so that the size of a day does not matter. Nothing goes through a shell.
