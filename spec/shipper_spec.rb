@@ -21,9 +21,11 @@ RSpec.describe "from Docker through Vector to one file a day",
     FileUtils.rm_rf(config)
   end
 
+  # What docker printed, without its remarks: on a machine that has to pull the image first, the
+  # pulling would end up in the container's id.
   def docker(*arguments)
-    output, status = Open3.capture2e("docker", *arguments)
-    status.success? ? output.strip : raise("docker #{arguments.join(" ")}: #{output}")
+    output, remarks, status = Open3.capture3("docker", *arguments)
+    status.success? ? output.strip : raise("docker #{arguments.join(" ")}: #{remarks}#{output}")
   end
 
   def writer(text, *options)
@@ -97,9 +99,10 @@ RSpec.describe "from Docker through Vector to one file a day",
     raise "the log file was not rotated, so rotation is not checked" unless rotated > 1
 
     60.times { shipped == 300 ? break : sleep(1) }
-    raise "Vector shipped #{shipped} of 300 lines:\n#{docker("logs", "--tail", "20", vector)}" unless shipped == 300
+    return docker("stop", vector) if shipped == 300
 
-    docker "stop", vector
+    logs, = Open3.capture2e("docker", "logs", "--tail", "20", vector) # both streams: Vector's log is on either
+    raise "Vector shipped #{shipped} of 300 lines:\n#{logs}"
   end
 
   shared_examples "shipping" do |sink|
