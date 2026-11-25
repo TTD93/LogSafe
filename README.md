@@ -31,6 +31,46 @@ Storage can be Amazon S3 or anything that speaks its protocol (DigitalOcean Spac
 your own server), Google Cloud Storage, or a plain folder. The job runs on whatever runs your jobs:
 Solid Queue, Sidekiq, GoodJob, Resque, or cron.
 
+You can also [search the logs in the browser](#in-the-browser), on a page you mount in your app, and
+[encrypt them](#encryption) before they leave your servers.
+
+**Contents:** [Requirements](#requirements) · [Try it](#try-it) · [Setup](#setup) ·
+[Reading the logs](#reading-the-logs) · [Lograge and other loggers](#lograge-and-other-loggers) ·
+[Encryption](#encryption) · [Reference](#reference) · [What can still be lost](#what-can-still-be-lost) ·
+[Good to know](#good-to-know) · [What has been run](#what-has-been-run) · [Development](#development)
+
+## Requirements
+
+- Ruby 3.3 or newer, and Active Job 7.1 or newer. The page needs no Rails: any Rack app can mount it.
+- Docker on the app servers, with its default `json-file` log driver.
+- For storage in a bucket, the gem of that storage: `aws-sdk-s3` 1.197 or newer, or
+  `google-cloud-storage`. Logsafe does not install them for you.
+- Where the merge job and the page run: the `sort`, `gzip`, `df`, `grep`, `awk`, `cut` and `tail`
+  commands, which every common Linux image has. On Alpine, add `coreutils`.
+
+## Try it
+
+A look at the page on your own machine, with a folder for storage and no Vector:
+
+```sh
+bundle add logsafe
+
+day=$(date -u +%F)
+mkdir -p tmp/logs/parts/demo/$day
+echo "${day}T08:00:00.000000001Z ERROR hello" > tmp/logs/parts/demo/$day/a.log
+touch -t 202601010000 tmp/logs/parts/demo/$day/a.log   # a part that was just written is left alone
+```
+
+```ruby
+# config/initializers/logsafe.rb
+Logsafe.storage = Rails.root.join("tmp/logs")
+
+# config/routes.rb
+mount Logsafe::Web, at: "logsafe" if Rails.env.development?
+```
+
+Start the app and open `/logsafe`. For your own logs, go on with Setup.
+
 ## Setup
 
 ### 1. Storage
@@ -116,6 +156,10 @@ The app must log to STDOUT, which is what a new Rails app does in production by 
 Vector can fall before lines are lost, so don't set it small.
 
 ### 3. Vector, on every app server
+
+The files for Vector come with the gem. `bundle info logsafe --path` prints where it is, and they are
+in its `shipper/` folder. Take them from the version of the gem your app uses, and look at them again
+when you update it: how Vector writes a line has to fit how the gem reads it.
 
 Copy [shipper/vector.yaml](shipper/vector.yaml) to `/etc/vector/`, together with **one** of these, and
 fill in the name of your bucket:
@@ -293,8 +337,11 @@ mount Logsafe::Web, at: "admin/logsafe",
 - **Level:** Docker does not know a line's level, so the page looks for the word in the line: `ERROR`,
   `level=error` and `"level":"error"` are all found by "error". Lines without the word, such as the
   lines of a stack trace, are not. Rails' production logger does not print the level; give it a
-  formatter that does, for example
-  `config.logger = ActiveSupport::TaggedLogging.logger(STDOUT, formatter: Logger::Formatter.new)`.
+  formatter that does, in `config/environments/production.rb`:
+
+  ```ruby
+  config.logger = ActiveSupport::TaggedLogging.new(Logger.new($stdout, formatter: Logger::Formatter.new))
+  ```
 - **It shows 500 lines** at a time, with a link to the ones before. Times and days are UTC. A search
   spans seven days at most, and 50 streams: with more, choose one.
 - **A search from another website** is not run. Its words and days are filled in, and you press Search.
@@ -320,6 +367,33 @@ mount Logsafe::Web, at: "admin/logsafe",
   holds by the names of the files. A part that arrives late for a finished day is listed for as long
   as two merges are apart, and a copy that is in use all that time sees it only if that is longer
   than the 30 minutes a copy can go unused.
+
+## Lograge and other loggers
+
+Logsafe does not touch your app's logger. It ships what the container writes to STDOUT, so lograge,
+semantic_logger, tagged logging and JSON formatters work as they are. The one thing to check is that
+they write to STDOUT and not to a file.
+
+[Lograge](https://github.com/roidrage/lograge) goes well with the page. A request is one line, so a
+search shows all of it, and its fields are words you can search for:
+
+| Lograge writes | Search for | The level "error" finds |
+| --- | --- | --- |
+| key=value, its default | `status=500` | nothing: the line has no level |
+| key=value, with the formatter from [Level](#in-the-browser) above | `status=500` | what is logged as an error; a failed request is logged as info |
+| JSON, with a `level` of its own | `"status":500` | requests that raised an error |
+
+For the last one:
+
+```ruby
+# config/environments/production.rb
+config.lograge.enabled = true
+config.lograge.formatter = Lograge::Formatters::Json.new
+config.lograge.custom_options = ->(event) { { level: event.payload[:exception] ? "error" : "info" } }
+```
+
+Words are found in the text of a line and nothing else: `status=500` also finds `status=5001`, and
+there is no search by field.
 
 ## Encryption
 
@@ -439,6 +513,60 @@ file, ChaCha20-Poly1305 for a line.
   `Logsafe.old_keys` and the merge has run again.
 - **`logsafe decrypt`** takes old keys from `LOGSAFE_OLD_KEYS`.
 
+## Reference
+
+What is listed here is what you can count on from one patch version to the next. Until 1.0 a minor
+version can change it, and [CHANGELOG.md](CHANGELOG.md) says so. Everything else in the gem is for its
+own use.
+
+### Settings
+
+Set them in `config/initializers/logsafe.rb`. None is read from the environment by itself.
+
+| Setting | What it takes | Without it |
+| --- | --- | --- |
+| `Logsafe.storage` | a path, `{ folder: path }`, `{ s3: bucket, … }`, `{ gcs: bucket, … }` or [an object of your own](#storage-of-your-own) | nothing works |
+| `Logsafe.streams` | the names of the streams that are merged, shown and encrypted again | every stream |
+| `Logsafe.key` | a key from `logsafe key` | nothing is encrypted, and what is cannot be read |
+| `Logsafe.old_keys` | keys that were in use before: a list, or one text with commas between them | only `Logsafe.key` reads |
+
+### Jobs and methods
+
+| Job | The same, without a job | What it does |
+| --- | --- | --- |
+| `Logsafe::MergeJob.perform_later(*streams)` | `Logsafe.merge(*streams)` | Merges the finished days of these streams, or of all. Run it every hour. |
+| `Logsafe::ReencryptJob.perform_later` | `Logsafe.reencrypt` | Encrypts with the key in use what is plain or under an old key. Run it after the key was set or changed. |
+| | `Logsafe.generate_key` | A new key, as `logsafe key` prints it. |
+| | `Logsafe.decrypt(from, into)` | Writes the gzip of a day's encrypted file to a path. |
+
+`Logsafe::Web` is a Rack app and takes no settings. What Logsafe itself refuses is a `Logsafe::Error`;
+what a storage raises, such as a network error, is passed on as it is.
+
+### The command line
+
+| Command | What it does |
+| --- | --- |
+| `logsafe key` | Prints a new key. |
+| `logsafe decrypt FILE` | Prints a day's file as gzip. |
+| `logsafe decrypt STREAM YYYY-MM-DD PART…` | Prints the lines of these parts, of that stream and day. |
+
+The keys come from `LOGSAFE_KEY` and `LOGSAFE_OLD_KEYS`. It needs neither Rails nor a storage.
+
+### Storage of your own
+
+Any object with these five methods can be `Logsafe.storage`. What each has to promise is written in
+[lib/logsafe/storage.rb](lib/logsafe/storage.rb), and `Logsafe::Storage::GCS` there is a short example.
+
+| Method | What it does |
+| --- | --- |
+| `keys(prefix)` | The keys that start with the prefix. |
+| `fetch(key, path)` | Copies a key's content to a local file. Several threads call it at once. |
+| `version(key)` | What tells the content the key has now from any other, or nil when there is none. |
+| `store(path, key, was)` | Copies a local file to the key if it still has the version `was`, and otherwise raises `Logsafe::Storage::Changed.new(key)`. |
+| `delete(keys)` | Removes them. One that is gone already is no failure. |
+
+Give it a `to_s` that says which storage it is, so that the page keeps two of them apart.
+
 ## What can still be lost
 
 | What happens | What is lost |
@@ -498,10 +626,28 @@ much or cannot be read, lines of another day, streams and dates that were made u
 encrypted files that were swapped, and searches that another website starts. Several runs at the same
 time, with each kind of storage.
 
-Not run: the page mounted in a Rails app, and the routing examples for it; real AWS, Google or
-DigitalOcean storage; Vector sending to Google Cloud Storage (the stand-in
+By hand, with the built gem installed: the page mounted in a Rails app, in a namespace and behind the
+session constraint above, and the merge through Active Job, on Rails 7.1 with Ruby 3.3 and on Rails 8.1
+with Ruby 4.0. What the page finds of lograge's lines, on Rails 8.1.
+
+Not run: the Devise example; real AWS, Google or DigitalOcean storage; Vector sending to Google Cloud Storage (the stand-in
 refuses the kind of upload Vector makes); Kamal; the scheduling examples above, which follow each
 tool's documentation; more than one server; long outages; folder permissions on Linux.
+
+## Development
+
+```sh
+bin/setup            # installs what is needed
+bundle exec rake     # specs and RuboCop
+shipper/test         # the same specs and the ones that need Docker: run this after a change to shipper/ or storage
+```
+
+Bug reports and pull requests are welcome on [GitHub](https://github.com/TTD93/LogSafe). Please don't
+paste real log lines or keys into an issue.
+
+To publish a version: set it in `lib/logsafe/version.rb`, run `bundle install`, name it with its date in
+[CHANGELOG.md](CHANGELOG.md), merge to `master`, wait for CI, and run `bundle exec rake release` there.
+That builds the gem, pushes the tag, and pushes the gem to RubyGems, which asks for a second factor.
 
 ## License
 
