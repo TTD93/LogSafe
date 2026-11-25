@@ -20,6 +20,23 @@ RSpec.shared_context "with a storage" do
   end
 end
 
+# names are those in the bucket itself.
+RSpec.shared_examples "a bucket" do
+  include_context "with a storage"
+
+  it "has everything in logs/, and sees nothing outside it" do
+    put "2026/11/web.2026-11-20.log.gz", "one\n"
+    other = described_class.new(storage.instance_variable_get(:@bucket), prefix: "")
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "file"), "two\n")
+      other.store(File.join(dir, "file"), "parts/web/2026-11-20/a.log", nil)
+    end
+
+    expect(names).to contain_exactly("logs/2026/11/web.2026-11-20.log.gz", "parts/web/2026-11-20/a.log")
+    expect(storage.keys("")).to eq ["2026/11/web.2026-11-20.log.gz"]
+  end
+end
+
 RSpec.shared_examples "a storage" do
   include_context "with a storage"
 
@@ -190,6 +207,10 @@ RSpec.describe Logsafe::Storage do
     before { require "aws-sdk-s3" }
 
     it_behaves_like "a storage"
+
+    it_behaves_like "a bucket" do
+      let(:names) { storage.instance_variable_get(:@bucket).objects.map(&:key) }
+    end
   end
 
   describe Logsafe::Storage::GCS, skip: (NEEDS_DOCKER unless ENV["LOGSAFE_TEST_GCS"]) do
@@ -200,6 +221,20 @@ RSpec.describe Logsafe::Storage do
     end
 
     it_behaves_like "a storage"
+
+    it_behaves_like "a bucket" do
+      let(:names) { storage.instance_variable_get(:@bucket).files.map(&:name) }
+    end
+  end
+
+  it "keeps the logs of a bucket in logs/, unless told otherwise" do
+    at = lambda do |**setting|
+      Logsafe::Storage.build(s3: "b", region: "eu-north-1", stub_responses: true, **setting).to_s[%r{/b/(.*)}, 1]
+    end
+
+    expect(at.call).to eq "logs/"
+    expect(at.call(prefix: "")).to eq ""
+    expect(at.call(prefix: "/shop/logs")).to eq "shop/logs/"
   end
 
   it "takes a folder as a path or by name, and any object of your own" do

@@ -11,10 +11,10 @@ do the rest:
 3. `Logsafe::MergeJob`, a background job in your Rails app, turns each finished day into a single file.
 
 ```
-my-logs/
-  2026/11/shop-prod.2026-11-23.log.gz     one file per stream per day
-  2026/11/shop-prod.2026-11-24.log.gz
-  parts/shop-prod/2026-11-25/…            today, not merged yet
+my-bucket/
+  logs/2026/11/shop-prod.2026-11-23.log.gz     one file per stream per day
+  logs/2026/11/shop-prod.2026-11-24.log.gz
+  logs/parts/shop-prod/2026-11-25/…            today, not merged yet
 ```
 
 A *stream* is a name you choose, such as `shop-prod` or `shop-prod-worker`. Containers with the same
@@ -77,21 +77,22 @@ it went before, and also to `tmp/logsafe`, where three days are kept. Each progr
 - Keep it private and turn **versioning** on, so a deleted or overwritten file can be brought back. Add
   a lifecycle rule that removes old versions after a week or two.
 - Use one bucket for production and another for staging. Let staging expire after a few weeks.
-- Make one access key per environment for the app servers, allowed only to write under `parts/`. On
+- Make one access key per environment for the app servers, allowed only to write under `logs/parts/`. On
   AWS:
 
   ```json
   {
     "Version": "2012-10-17",
     "Statement": [
-      { "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::my-logs/parts/shop-prod*" }
+      { "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::my-bucket/logs/parts/shop-prod*" }
     ]
   }
   ```
 
   A server that is broken into can then neither read nor delete logs. It can still add lines of its
   own, under any stream the key covers.
-- Make one more key for the merge job, allowed to list, read, write and delete in the bucket.
+- Make one more key for the merge job, allowed to list the bucket, and to read, write and delete
+  under `logs/`.
 
 **A folder (a disk on your own server, a network share, or your own machine in development)**
 
@@ -210,14 +211,18 @@ gem "google-cloud-storage"  # for Google Cloud Storage
 
 ```ruby
 # config/initializers/logsafe.rb, one of:
-Logsafe.storage = { s3: "my-logs", region: "eu-west-1" }
-Logsafe.storage = { s3: "my-logs", region: "ams3", endpoint: "https://ams3.digitaloceanspaces.com",
+Logsafe.storage = { s3: "my-bucket", region: "eu-west-1" }
+Logsafe.storage = { s3: "my-bucket", region: "ams3", endpoint: "https://ams3.digitaloceanspaces.com",
                     access_key_id: "…", secret_access_key: "…" }
-Logsafe.storage = { gcs: "my-logs", project_id: "my-project", credentials: "/path/to/key.json" }
+Logsafe.storage = { gcs: "my-bucket", project_id: "my-project", credentials: "/path/to/key.json" }
 Logsafe.storage = "/mnt/logs"
 ```
 
-What follows the bucket's name goes to `Aws::S3::Resource.new` or `Google::Cloud::Storage.new` as it
+In a bucket the logs are in the folder `logs/`, beside whatever else it has. For another folder, add
+`prefix: "shop/logs/"`, or `prefix: ""` for none, and put the same in front of `parts/` in Vector's
+`key_prefix`: what Vector writes anywhere else is never found. A path is taken as it is.
+
+What else follows the bucket's name goes to `Aws::S3::Resource.new` or `Google::Cloud::Storage.new` as it
 is. Without keys, each library looks where it usually does, such as `AWS_ACCESS_KEY_ID`. For storage
 of another kind, give `Logsafe.storage` an object of your own; the five methods it needs are listed in
 [lib/logsafe/storage.rb](lib/logsafe/storage.rb).
@@ -292,13 +297,13 @@ lists the bucket.
 ## Reading the logs
 
 ```sh
-aws s3 cp s3://my-logs/2026/11/shop-prod.2026-11-24.log.gz - | gzip -dc | grep "OrdersController"
+aws s3 cp s3://my-bucket/logs/2026/11/shop-prod.2026-11-24.log.gz - | gzip -dc | grep "OrdersController"
 ```
 
 Today's lines are still in parts:
 
 ```sh
-aws s3 cp s3://my-logs/parts/shop-prod/$(date -u +%F)/ today --recursive
+aws s3 cp s3://my-bucket/logs/parts/shop-prod/$(date -u +%F)/ today --recursive
 gzip -dc today/* | LC_ALL=C sort | less
 ```
 
@@ -426,7 +431,7 @@ To read a day, with the key in `LOGSAFE_KEY`. `logsafe` is the gem's command: `b
 in the app, or plain `logsafe` after `gem install logsafe` on your own machine.
 
 ```sh
-aws s3 cp s3://my-logs/2026/11/shop-prod.2026-11-24.log.gz.enc day.enc
+aws s3 cp s3://my-bucket/logs/2026/11/shop-prod.2026-11-24.log.gz.enc day.enc
 logsafe decrypt day.enc | gzip -dc | grep "OrdersController"
 ```
 
@@ -434,7 +439,7 @@ Today's lines, from the parts, need the stream and the day as well. A part that 
 named, and the others are printed.
 
 ```sh
-aws s3 cp s3://my-logs/parts/shop-prod/$(date -u +%F)/ today --recursive
+aws s3 cp s3://my-bucket/logs/parts/shop-prod/$(date -u +%F)/ today --recursive
 logsafe decrypt shop-prod $(date -u +%F) today/* | LC_ALL=C sort | less
 ```
 
@@ -522,7 +527,7 @@ Set them in `config/initializers/logsafe.rb`. None is read from the environment 
 
 | Setting | What it takes | Without it |
 | --- | --- | --- |
-| `Logsafe.storage` | a path, `{ folder: path }`, `{ s3: bucket, … }`, `{ gcs: bucket, … }` or [an object of your own](#storage-of-your-own) | in development, a Rails app has [its own log](#try-it); elsewhere nothing works |
+| `Logsafe.storage` | a path, `{ folder: path }`, `{ s3: bucket, prefix: "logs/", … }`, `{ gcs: bucket, prefix: "logs/", … }` or [an object of your own](#storage-of-your-own) | in development, a Rails app has [its own log](#try-it); elsewhere nothing works |
 | `Logsafe.streams` | the names of the streams that are merged, shown and encrypted again | every stream |
 | `Logsafe.key` | a key from `logsafe key` | nothing is encrypted, and what is cannot be read |
 | `Logsafe.old_keys` | keys that were in use before: a list, or one text with commas between them | only `Logsafe.key` reads |

@@ -4,8 +4,8 @@ sinks:
   storage:
     type: gcp_cloud_storage
     inputs: [lines]
-    bucket: my-logs
-    key_prefix: "parts/{{ stream }}/{{ day }}/"
+    bucket: my-bucket
+    key_prefix: "logs/parts/{{ stream }}/{{ day }}/"
     encoding:
       codec: text
     framing:

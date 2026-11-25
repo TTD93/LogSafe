@@ -4,10 +4,10 @@ sinks:
   storage:
     type: aws_s3
     inputs: [lines]
-    bucket: my-logs
+    bucket: my-bucket
     region: us-east-1
     # endpoint: https://ams3.digitaloceanspaces.com
-    key_prefix: "parts/{{ stream }}/{{ day }}/"
+    key_prefix: "logs/parts/{{ stream }}/{{ day }}/"
     encoding:
       codec: text
     framing:

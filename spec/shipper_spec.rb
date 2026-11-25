@@ -147,7 +147,7 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
     let(:run_options) { %w[-e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test] }
     let(:changes) do
-      { "bucket: my-logs" => "bucket: #{bucket}", /# endpoint: .*/ => "endpoint: http://logsafe-test-s3:7070",
+      { "bucket: my-bucket" => "bucket: #{bucket}", /# endpoint: .*/ => "endpoint: http://logsafe-test-s3:7070",
         "timeout_secs: 60" => "timeout_secs: 2" }
     end
 

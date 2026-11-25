@@ -58,11 +58,16 @@ module Logsafe
       case setting
       in String | Pathname then Folder.new(setting.to_s)
       in { folder: } then Folder.new(folder.to_s)
-      in { s3: String => bucket, **options } then S3.new(S3.bucket(bucket, options))
-      in { gcs: String => bucket, **options } then GCS.new(GCS.bucket(bucket, options))
+      in { s3: String => bucket, **options } then in_bucket(S3, bucket, **options)
+      in { gcs: String => bucket, **options } then in_bucket(GCS, bucket, **options)
       else setting
       end
     end
+
+    def self.in_bucket(type, name, prefix: Bucket::PREFIX, **options)
+      type.new(type.bucket(name, options), prefix:)
+    end
+    private_class_method :in_bucket
 
     # A folder: a local disk, a mounted volume or a network share.
     # What is below the root is opened one folder at a time, each from the handle of the one above, and
@@ -219,33 +224,46 @@ module Logsafe
       end
     end
 
+    # What buckets have in common: the logs are in a folder there, beside whatever else the bucket has.
+    # The keys given and returned are those below it. Vector has to write to the same one: shipper/to-*.yaml.
+    class Bucket
+      PREFIX = "logs/"
+
+      def initialize(bucket, prefix: PREFIX)
+        @bucket = bucket
+        @prefix = prefix.to_s.split("/").reject(&:empty?).map { |step| "#{step}/" }.join
+      end
+
+      private
+
+      def full(key)
+        @prefix + key
+      end
+    end
+
     # Amazon S3 and anything that speaks its protocol: DigitalOcean Spaces, MinIO, Garage, ...
-    class S3
+    class S3 < Bucket
       def self.bucket(name, options)
         require "aws-sdk-s3"
         Aws::S3::Resource.new(**options).bucket(name)
       end
 
-      def initialize(bucket)
-        @bucket = bucket
-      end
-
       def keys(prefix)
-        @bucket.objects(prefix:).map(&:key)
+        @bucket.objects(prefix: full(prefix)).map { |object| object.key.delete_prefix(@prefix) }
       end
 
       def to_s
-        "s3:#{@bucket.client.config.endpoint}/#{@bucket.name}"
+        "s3:#{@bucket.client.config.endpoint}/#{@bucket.name}/#{@prefix}"
       end
 
       # In one request: left to itself the library asks for the size first, twice the requests for a
       # day's thousand parts. A file of several GB comes in one piece too, which is slower but works.
       def fetch(key, path)
-        transfer.download_file(path, bucket: @bucket.name, key:, mode: "single_request")
+        transfer.download_file(path, bucket: @bucket.name, key: full(key), mode: "single_request")
       end
 
       def version(key)
-        @bucket.object(key).etag
+        @bucket.object(full(key)).etag
       rescue Aws::S3::Errors::NotFound
         nil
       end
@@ -265,7 +283,8 @@ module Logsafe
 
       def delete(keys)
         keys.each_slice(1000) do |slice|
-          failed = @bucket.delete_objects(delete: { objects: slice.map { |key| { key: } }, quiet: true }).errors
+          objects = slice.map { |key| { key: full(key) } }
+          failed = @bucket.delete_objects(delete: { objects:, quiet: true }).errors
           raise Error, "could not delete #{failed.first.key}: #{failed.first.message}" if failed.any?
         end
       end
@@ -273,7 +292,7 @@ module Logsafe
       private
 
       def upload(path, key, only_if)
-        transfer.upload_file(path, bucket: @bucket.name, key:, **only_if)
+        transfer.upload_file(path, bucket: @bucket.name, key: full(key), **only_if)
       end
 
       def codes(error)
@@ -288,36 +307,32 @@ module Logsafe
     end
 
     # Google Cloud Storage.
-    class GCS
+    class GCS < Bucket
       def self.bucket(name, options)
         require "google/cloud/storage"
         Google::Cloud::Storage.new(**options).bucket(name, skip_lookup: true)
       end
 
-      def initialize(bucket)
-        @bucket = bucket
-      end
-
       def keys(prefix)
-        @bucket.files(prefix:).all.map(&:name)
+        @bucket.files(prefix: full(prefix)).all.map { |file| file.name.delete_prefix(@prefix) }
       end
 
       def to_s
-        "gcs:#{@bucket.name}"
+        "gcs:#{@bucket.name}/#{@prefix}"
       end
 
       # As it is stored: left to itself the library unpacks gzip in memory, however much that comes to.
       def fetch(key, path)
-        @bucket.file(key, skip_lookup: true).download(path, skip_decompress: true)
+        @bucket.file(full(key), skip_lookup: true).download(path, skip_decompress: true)
       end
 
       def version(key)
-        @bucket.file(key)&.generation
+        @bucket.file(full(key))&.generation
       end
 
       # The storage itself refuses to replace another version; 0 is one that is not there.
       def store(path, key, was)
-        @bucket.create_file(path, key, if_generation_match: was || 0)
+        @bucket.create_file(path, full(key), if_generation_match: was || 0)
       rescue Google::Cloud::FailedPreconditionError
         raise Changed, key
       end
@@ -325,7 +340,7 @@ module Logsafe
       # One request per file, so several at a time. A file that is gone already, another run removed.
       def delete(keys)
         Storage.side_by_side(keys) do |key|
-          @bucket.file(key, skip_lookup: true).delete
+          @bucket.file(full(key), skip_lookup: true).delete
         rescue Google::Cloud::NotFoundError
           next
         end

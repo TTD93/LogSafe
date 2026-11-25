@@ -8,7 +8,7 @@ require_relative "logsafe/version"
 
 # Turns the parts a log shipper left in storage into one sorted file per stream per day:
 #   parts/<stream>/<date>/*  ->  <year>/<month>/<stream>.<date>.log.gz
-# With a key, encrypted: see Logsafe::Cipher.
+# In a bucket both are below logs/. With a key, encrypted: see Logsafe::Cipher.
 module Logsafe
   class Error < StandardError; end
 

@@ -3,6 +3,18 @@
 The versions follow [Semantic Versioning](https://semver.org). Until 1.0, a minor version can change
 what is in the README's Reference.
 
+## [0.3.0] - 2026-11-25
+
+- **In a bucket** the logs are now in the folder `logs/`: `logs/2026/11/<stream>.<date>.log.gz` and
+  `logs/parts/<stream>/<date>/`. Before, they were at the top of the bucket. `prefix:` in
+  `Logsafe.storage` names another folder, or none. A folder as storage, and one of your own, stay as
+  they were.
+
+  **If you already have logs in a bucket,** either keep them where they are, with `prefix: ""` and the
+  `key_prefix` you have in Vector, or move them: put `logs/` in front of `parts/` in Vector's
+  `key_prefix` and in the policy of its key, restart Vector, update the gem, and move `parts/` and the
+  year folders into `logs/`. What is not below `logs/` is neither merged nor shown.
+
 ## [0.2.0] - 2026-11-25
 
 - **In development** a Rails app that sets no `Logsafe.storage` now has its own log on the page, without
