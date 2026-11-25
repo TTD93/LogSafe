@@ -92,7 +92,8 @@ module Logsafe
     end
 
     # Merges every finished day (UTC) of the given streams, or of all streams. Safe to run again at
-    # any time, and as often as you like. One day that fails does not hold up the others. A run that
+    # any time, though no more than every half hour where the page is in use: see Copies. One day that
+    # fails does not hold up the others. A run that
     # has gone on for RUN leaves the rest to the next one, and because the order is another each time,
     # those are not always the same.
     def merge(*streams, today: Time.now.utc.strftime("%F"))
