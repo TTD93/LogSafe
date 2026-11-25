@@ -16,6 +16,7 @@ module Logsafe
   autoload :Reencrypt, "logsafe/reencrypt"
   autoload :ReencryptJob, "logsafe/reencrypt_job"
   autoload :Copies, "logsafe/copies"
+  autoload :Development, "logsafe/development"
   autoload :Search, "logsafe/search"
   autoload :Web, "logsafe/web"
 
@@ -37,6 +38,10 @@ module Logsafe
 
     def storage
       @storage || raise(Error, "Logsafe.storage is not set, see the README")
+    end
+
+    def storage?
+      !@storage.nil?
     end
 
     # The names of the streams there are, if nothing else is to be merged, shown or encrypted again.
@@ -157,3 +162,4 @@ require_relative "logsafe/storage"
 require_relative "logsafe/cipher"
 require_relative "logsafe/source"
 require_relative "logsafe/day"
+require_relative "logsafe/railtie" if defined?(Rails::Railtie)

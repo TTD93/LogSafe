@@ -77,10 +77,11 @@ module Logsafe
       # for a while. A key that is gone by the time it is fetched is noticed there.
       # One thread at a time: a server's threads share the listings, and a second search that comes
       # while the storage is being listed waits for that listing and does not ask for its own.
+      # In development every search lists, so that a line is there as soon as it is logged.
       def listed(prefix)
         LISTING.synchronize do
           at, keys = (@listed ||= {})[[Logsafe.storage, prefix]]
-          next keys if at && Time.now - at < LIST_FOR
+          next keys if at && Time.now - at < LIST_FOR && !Logsafe.storage.is_a?(Development)
 
           @listed.delete_if { |_, (time, _)| Time.now - time >= LIST_FOR }
           (@listed[[Logsafe.storage, prefix]] = [Time.now, Logsafe.storage.keys(prefix)]).last

@@ -15,3 +15,6 @@ gem "rubocop", "~> 1.21"
 # Each is only needed for its own kind of storage; the specs try them all.
 gem "aws-sdk-s3"
 gem "google-cloud-storage"
+
+# For the default in development, which the specs start a small app for.
+gem "railties"

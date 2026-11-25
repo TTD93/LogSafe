@@ -3,6 +3,13 @@
 The versions follow [Semantic Versioning](https://semver.org). Until 1.0, a minor version can change
 what is in the README's Reference.
 
+## [0.2.0] - 2026-11-25
+
+- **In development** a Rails app that sets no `Logsafe.storage` now has its own log on the page, without
+  any setting. What the app logs is kept in `tmp/logsafe` as well as in `log/development.log`, for three
+  days. Set `Logsafe.storage` yourself and nothing of this happens. Before, the page said that there was
+  no storage, and everywhere else it still does.
+
 ## [0.1.0] - 2026-11-25
 
 The first version.

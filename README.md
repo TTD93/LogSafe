@@ -50,26 +50,23 @@ You can also [search the logs in the browser](#in-the-browser), on a page you mo
 
 ## Try it
 
-A look at the page on your own machine, with a folder for storage and no Vector:
+A look at the page on your own machine, without Vector or a bucket:
 
 ```sh
 bundle add logsafe
-
-day=$(date -u +%F)
-mkdir -p tmp/logs/parts/demo/$day
-echo "${day}T08:00:00.000000001Z ERROR hello" > tmp/logs/parts/demo/$day/a.log
-touch -t 202601010000 tmp/logs/parts/demo/$day/a.log   # a part that was just written is left alone
 ```
 
 ```ruby
-# config/initializers/logsafe.rb
-Logsafe.storage = Rails.root.join("tmp/logs")
-
 # config/routes.rb
 mount Logsafe::Web, at: "logsafe" if Rails.env.development?
 ```
 
-Start the app and open `/logsafe`. For your own logs, go on with Setup.
+Start the app and open `/logsafe`: it shows what your app logs, as soon as it is logged. For the logs of
+your servers, go on with Setup.
+
+In development, a Rails app that sets no `Logsafe.storage` gets this by itself. Its log still goes where
+it went before, and also to `tmp/logsafe`, where three days are kept. Each program, such as `rails` or
+`sidekiq`, is a stream. Set `Logsafe.storage` and none of this happens.
 
 ## Setup
 
@@ -525,7 +522,7 @@ Set them in `config/initializers/logsafe.rb`. None is read from the environment 
 
 | Setting | What it takes | Without it |
 | --- | --- | --- |
-| `Logsafe.storage` | a path, `{ folder: path }`, `{ s3: bucket, … }`, `{ gcs: bucket, … }` or [an object of your own](#storage-of-your-own) | nothing works |
+| `Logsafe.storage` | a path, `{ folder: path }`, `{ s3: bucket, … }`, `{ gcs: bucket, … }` or [an object of your own](#storage-of-your-own) | in development, a Rails app has [its own log](#try-it); elsewhere nothing works |
 | `Logsafe.streams` | the names of the streams that are merged, shown and encrypted again | every stream |
 | `Logsafe.key` | a key from `logsafe key` | nothing is encrypted, and what is cannot be read |
 | `Logsafe.old_keys` | keys that were in use before: a list, or one text with commas between them | only `Logsafe.key` reads |
@@ -608,7 +605,7 @@ time, with each kind of storage.
 
 By hand, with the built gem installed: the page mounted in a Rails app, in a namespace and behind the
 session constraint above, and the merge through Active Job, on Rails 7.1 with Ruby 3.3 and on Rails 8.1
-with Ruby 4.0. What the page finds of lograge's lines, on Rails 8.1.
+with Ruby 4.0. What the page finds of lograge's lines, on Rails 8.1. The default in development, on both.
 
 Not run: the Devise example; real AWS, Google or DigitalOcean storage; Vector sending to Google Cloud Storage (the stand-in
 refuses the kind of upload Vector makes); Kamal; the scheduling examples above, which follow each
