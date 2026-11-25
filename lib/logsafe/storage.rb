@@ -16,20 +16,28 @@ module Logsafe
     # fails, and raises what it raised.
     def self.fetch(storage, keys, dir)
       paths = keys.each_index.map { |index| File.join(dir, "source#{index}") }
-      jobs = Queue.new(keys.zip(paths)).close
+      side_by_side(keys.zip(paths)) do |key, path|
+        storage.fetch(key, path)
+        yield(key, path)
+      end
+      paths
+    end
+
+    # Gives each item to the block, several at a time. Stops at the first that fails, and raises what it raised.
+    def self.side_by_side(items)
+      jobs = Queue.new(items).close
       failure = nil
-      Array.new([8, keys.size].min) do
+      Array.new([8, items.size].min) do
         Thread.new do
           while (job = jobs.pop)
-            storage.fetch(*job)
-            yield(*job)
+            yield(job)
           end
         rescue StandardError => e
           jobs.clear
           failure ||= e
         end
       end.each(&:join)
-      failure ? raise(failure) : paths
+      raise failure if failure
     end
 
     def self.build(setting)
@@ -74,9 +82,18 @@ module Logsafe
         File.rename(temporary, path(key))
       end
 
+      # What is gone already, another run removed: two runs at the same time are no failure.
       def delete(keys)
-        keys.each { |key| File.delete(path(key)) }
-        keys.map { |key| File.dirname(path(key)) }.uniq.each { |dir| Dir.rmdir(dir) if Dir.empty?(dir) }
+        keys.each do |key|
+          File.delete(path(key))
+        rescue Errno::ENOENT
+          next
+        end
+        keys.map { |key| File.dirname(path(key)) }.uniq.each do |dir|
+          Dir.rmdir(dir) if Dir.empty?(dir)
+        rescue Errno::ENOENT, Errno::ENOTEMPTY
+          next
+        end
       end
 
       private
@@ -161,8 +178,13 @@ module Logsafe
         @bucket.create_file(path, key)
       end
 
+      # One request per file, so several at a time. A file that is gone already, another run removed.
       def delete(keys)
-        keys.each { |key| @bucket.file(key, skip_lookup: true).delete }
+        Storage.side_by_side(keys) do |key|
+          @bucket.file(key, skip_lookup: true).delete
+        rescue Google::Cloud::NotFoundError
+          next
+        end
       end
     end
   end

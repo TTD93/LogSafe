@@ -14,18 +14,12 @@ Gem::Specification.new do |spec|
                      "into one sorted file per day. A cheap alternative to hosted logging."
   spec.homepage = "https://github.com/TTD93/LogSafe"
   spec.license = "MIT"
-  spec.required_ruby_version = ">= 3.2.0"
+  spec.required_ruby_version = ">= 3.3.0"
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/master/CHANGELOG.md"
+  spec.metadata["rubygems_mfa_required"] = "true" # nobody publishes a version without a second factor
 
-  # Uncomment the line below to require MFA for gem pushes.
-  # This helps protect your gem from supply chain attacks by ensuring
-  # no one can publish a new version without multi-factor authentication.
-  # See: https://guides.rubygems.org/mfa-requirement-opt-in/
-  # spec.metadata["rubygems_mfa_required"] = "true"
-
-  # Specify which files should be added to the gem when it is released.
-  # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
+  # The files that are in git, without the ones only this repository needs.
   gemspec = File.basename(__FILE__)
   spec.files = IO.popen(%w[git ls-files -z], chdir: __dir__, err: IO::NULL) do |ls|
     ls.readlines("\x0", chomp: true).reject do |f|
@@ -38,7 +32,4 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "activejob", ">= 7.1"
-
-  # For more information and examples about making a new gem, check out our
-  # guide at: https://guides.rubygems.org/make-your-own-gem/
 end

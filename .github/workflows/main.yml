@@ -16,6 +16,7 @@ jobs:
     strategy:
       matrix:
         ruby:
+          - '3.3' # the oldest the gemspec allows
           - '4.0.10'
 
     steps:

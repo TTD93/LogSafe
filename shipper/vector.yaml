@@ -32,6 +32,9 @@ transforms:
         stream = "unparsed"
       }
       if !is_string(stream) { abort } # a container without the label
+      # The name becomes a folder under parts/: with a slash in it the merge would never find the
+      # lines, and with dots in front they could land outside. Kept where they are seen instead.
+      if !match(string!(stream), r'^[A-Za-z0-9][A-Za-z0-9._-]*$') { stream = "unparsed" }
 
       # The time Docker saw the line, at a fixed width, so sorting the text sorts by time.
       at = parse_timestamp(entry.time, "%+") ?? now()
@@ -81,6 +84,19 @@ tests:
         log_fields:
           message: '{"log":"proxy noise\n","stream":"stdout","time":"2026-11-24T10:00:00Z"}'
     no_outputs_from: [lines]
+  - name: a label that cannot be a folder's name is not used as one
+    inputs:
+      - insert_at: lines
+        type: log
+        log_fields:
+          message: '{"log":"hello\n","stream":"stdout","attrs":{"logs":"../team/web"},"time":"2026-11-24T10:00:00Z"}'
+    outputs:
+      - extract_from: lines
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.stream, "unparsed")
+              assert_eq!(.message, "2026-11-24T10:00:00.000000000Z hello")
   - name: a line that is not Docker's is kept
     inputs:
       - insert_at: lines
