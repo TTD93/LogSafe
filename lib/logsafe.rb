@@ -131,18 +131,29 @@ module Logsafe
     def gather(sources, dir)
       all = File.join(dir, "all")
       FileUtils.touch(all)
-      sources.zip(Storage.fetch(storage, sources, dir)).map do |key, source|
-        source = Cipher.unseal(source, "#{source}.gz", keys) if Cipher.sealed?(source)
+      Storage.fetch(storage, sources, dir) { |key, source| unpack(key, source) }.map do |source|
         size = File.size(all)
-        append(source, all) || raise(Error, "#{key} cannot be read, is it damaged?")
+        File.open(all, "ab") { |file| IO.copy_stream(source, file) }
         File.write(all, "\n", mode: "a") unless ends_with_line_break?(all) # or two lines would become one
-        FileUtils.rm_f([source, source.delete_suffix(".gz")]) # so the sources and their lines are not both on disk
+        File.delete(source) # so the sources and their lines are not both on disk
         File.size(all) - size
       end
     end
 
+    # Puts a source's plain text in its place, in the thread that fetched it: a day of parts is a
+    # thousand runs of gzip. Encrypted or not, compressed or not, is read from the file itself: names
+    # and storages don't always agree.
+    def unpack(key, source)
+      File.rename(Cipher.unseal(source, "#{source}.open", keys), source) if Cipher.sealed?(source)
+      return unless File.binread(source, 2) == GZIP
+
+      system("gzip", "-dc", source, out: "#{source}.plain", err: File::NULL) ||
+        raise(Error, "#{key} cannot be read, is it damaged?")
+      File.rename("#{source}.plain", source)
+    end
+
     # Puts the lines a shipper encrypted back as they were, so that sorting, and keeping a line once,
-    # are done on what the lines say. Costs nothing when there are none.
+    # are done on what the lines say. Costs one reading when there are none.
     def decrypt_lines(all, line_keys)
       system("grep", "-q", "^#{Cipher::LINE}", all)
       found = Process.last_status.exitstatus
@@ -153,13 +164,6 @@ module Logsafe
         File.foreach(all, mode: "rb") { |line| plain << Cipher.plain(line, line_keys) }
       end
       File.rename("#{all}.plain", all)
-    end
-
-    # Encrypted or not, compressed or not, is read from the file itself: names and storages don't always agree.
-    def append(source, all)
-      return system("gzip", "-dc", source, out: [all, "a"], err: File::NULL) if File.binread(source, 2) == GZIP
-
-      File.open(all, "ab") { |file| IO.copy_stream(source, file) }
     end
 
     def ends_with_line_break?(path)
@@ -180,7 +184,7 @@ module Logsafe
       sorted
     end
 
-    # The system's gzip and not Ruby's Zlib, here and in append: Zlib fails with BufError when any
+    # The system's gzip and not Ruby's Zlib, here and in unpack: Zlib fails with BufError when any
     # child process exits while it works (seen on Ruby 4.0), and a job worker starts processes often.
     def pack(path)
       system("gzip", "-n", path) || raise(Error, "gzip failed")
