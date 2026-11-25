@@ -7,6 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VECTOR=timberio/vector:0.62.0-alpine
+# Not adobe/s3mock: of several writes that only one may win, it lets more through. S3 does not, and nor does this.
+S3=versity/versitygw:v1.11.0
 net=logsafe-test
 
 cleanup() {
@@ -23,11 +25,12 @@ done
 docker run --rm -v "$PWD/shipper:/etc/vector:ro" $VECTOR test /etc/vector/vector.yaml /etc/vector/to-folder.yaml
 
 docker network create $net >/dev/null
-docker run -d --label logsafe-test --network $net --name $net-s3 -p 127.0.0.1:9901:9090 adobe/s3mock >/dev/null
+docker run -d --label logsafe-test --network $net --name $net-s3 -p 127.0.0.1:9901:7070 \
+  -e ROOT_ACCESS_KEY=test -e ROOT_SECRET_KEY=test $S3 posix /tmp >/dev/null
 docker run -d --label logsafe-test --network $net --name $net-gcs -p 127.0.0.1:9902:4443 \
   fsouza/fake-gcs-server -scheme http -port 4443 -external-url http://127.0.0.1:9902 >/dev/null
 for try in $(seq 180); do
-  curl -sf http://127.0.0.1:9901/ >/dev/null && curl -sf http://127.0.0.1:9902/storage/v1/b >/dev/null && break
+  curl -s http://127.0.0.1:9901/ >/dev/null && curl -sf http://127.0.0.1:9902/storage/v1/b >/dev/null && break
   [ "$try" -lt 180 ] || { echo "FAIL: the stand-ins did not start within three minutes"; exit 1; }
   sleep 1
 done

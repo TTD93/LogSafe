@@ -1,11 +1,10 @@
 # frozen_string_literal: true
 
+require "date"
 require "fileutils"
 require "pathname"
 require "tmpdir"
 require_relative "logsafe/version"
-require_relative "logsafe/storage"
-require_relative "logsafe/cipher"
 
 # Turns the parts a log shipper left in storage into one sorted file per stream per day:
 #   parts/<stream>/<date>/*  ->  <year>/<month>/<stream>.<date>.log.gz
@@ -23,6 +22,12 @@ module Logsafe
   PARTS = "parts/"
   DATE = /\A\d{4}-\d{2}-\d{2}\z/
   GZIP = "\x1F\x8B".b
+  # What a stream can be called, as in shipper/vector.yaml: it becomes part of names of files. And what
+  # is a part: nothing that could forge a line where its name is printed.
+  STREAM = /[A-Za-z0-9][A-Za-z0-9._-]{0,199}/
+  PART = %r{\A#{PARTS}(#{STREAM})/(\d{4}-\d{2}-\d{2})/[^[:cntrl:]]+\z}
+  AGE = 366 # days. A part of a date before that is left alone: there are too many such dates to make up.
+  RUN = 50 * 60 # seconds after which a merge starts with no other day, so that hourly runs do not pile up
 
   class << self
     # Where the logs are: a folder, { s3: "bucket", ... } or { gcs: "bucket", ... }. See the README.
@@ -32,6 +37,21 @@ module Logsafe
 
     def storage
       @storage || raise(Error, "Logsafe.storage is not set, see the README")
+    end
+
+    # The names of the streams there are, if nothing else is to be merged, shown or encrypted again.
+    # Whoever may write parts can make up any number of other names.
+    def streams=(names)
+      names &&= Array(names).map(&:to_s)
+      wrong = names.to_a.grep_v(/\A#{STREAM}\z/)
+      raise Error, "Logsafe.streams has a name that no stream can have: #{wrong.first.inspect}" if wrong.any?
+      raise Error, "Logsafe.streams is empty. Leave it out to have every stream" if names == []
+
+      @streams = names
+    end
+
+    def stream?(name)
+      @streams.nil? || @streams.include?(name)
     end
 
     # The key from `logsafe key`. With it the day's file is encrypted, as <stream>.<date>.log.gz.enc,
@@ -67,130 +87,72 @@ module Logsafe
     # second run removes it, having found all of it there.
     def reencrypt
       Reencrypt.call(storage, @key || raise(Error, "Logsafe.key is not set"), @old_keys.to_a) do |stream, day|
-        2.times { merge_day(stream, day, []) }
+        2.times { Day.new(stream, day).merge([]) }
       end
     end
 
     # Merges every finished day (UTC) of the given streams, or of all streams. Safe to run again at
-    # any time, and as often as you like. One day that fails does not hold up the others.
+    # any time, and as often as you like. One day that fails does not hold up the others. A run that
+    # has gone on for RUN leaves the rest to the next one, and because the order is another each time,
+    # those are not always the same.
     def merge(*streams, today: Time.now.utc.strftime("%F"))
-      failures = finished(streams, today).filter_map do |(stream, day), parts|
-        merge_day(stream, day, parts)
-        nil
-      rescue StandardError => e
-        warn "Logsafe could not merge #{stream} #{day}: #{e.class}: #{e.message.lines.first}"
-        e
-      end
+      waiting = finished(streams, today).shuffle
+      stop = clock + RUN
+      failures = []
+      failures.concat(attempt(*waiting.pop)) while waiting.any? && clock < stop
+      warn "Logsafe leaves #{waiting.size} days to the next run: this one has taken long enough" if waiting.any?
       raise failures.first if failures.any?
     end
 
-    # The lines of these keys of one stream and day, decrypted and sorted, in a file in dir. Returns its path.
-    # A day's file is in order as it is: say so, and it is not sorted again.
-    def lines(stream, day, sources, dir, sorted: false)
-      gather(sources, dir)
-      sorted ? File.join(dir, "all") : sort(dir, stream, day)
+    # The parts among these keys, as { [stream, date] => keys }.
+    def parts(keys)
+      keys.group_by { |key| key.match(PART)&.captures }.select do |(stream, day), _|
+        day && stream?(stream) && Date.valid_date?(*day.split("-").map(&:to_i))
+      end
     end
 
     private
 
-    # { [stream, date] => [keys of its parts] } for the days that are over.
+    # Merges a day, and returns what went wrong, if anything did.
+    def attempt((stream, day), parts)
+      Day.new(stream, day).merge(parts)
+      []
+    rescue StandardError => e
+      warn "Logsafe could not merge #{stream} #{day}: #{e.class}: #{e.message.lines.first}"
+      [e]
+    end
+
+    def clock
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    # [[stream, date], [keys of its parts]] for the days that are over.
     def finished(streams, today)
-      storage.keys(PARTS).group_by { |key| key.split("/")[1, 2] }.select do |(stream, day), _|
-        day.to_s.match?(DATE) && day < today && (streams.empty? || streams.include?(stream))
-      end
+      parts = recent((Date.iso8601(today) - AGE).to_s)
+      parts.select { |(stream, day), _| day < today && (streams.empty? || streams.include?(stream)) }.to_a
     end
 
-    # The first run writes the day's file and leaves the parts. A later run finds that the parts add
-    # nothing to the file, and only then removes them. So a part is never deleted on the word of the
-    # run that uploaded it, and two runs at the same time cannot lose a line between them.
-    # ponytail: a run that is still going when two later runs have finished can put back an older
-    # file; add conditional writes (If-Match) to the storages if runs ever take that long.
-    # The day's file under its other name, from before the key was set, counts as a part:
-    # so a day never ends up as two files, one of them in plain text.
-    def merge_day(stream, day, parts)
-      file, other = names(stream, day)
-      days = storage.keys("#{File.dirname(file)}/")
-      earlier = days.include?(file)
-      parts += [other] & days
-      Dir.mktmpdir("logsafe") do |dir|
-        sizes = gather([*(file if earlier), *parts], dir)
-        merged = sort(dir, stream, day)
-        next storage.delete(parts) if earlier && sizes.first == File.size(merged)
-
-        storage.store(pack(merged), file)
-      end
+    def recent(oldest)
+      keys = storage.keys(PARTS).reject { |key| key.end_with?("/") } # a folder, as some storages list them
+      parts = parts(keys).select { |(_, day), _| day >= oldest }
+      report(keys, keys.size - parts.values.sum(&:size))
+      parts
     end
 
-    # The name of the day's file, and the name it has with the key set the other way.
-    def names(stream, day)
-      plain = "#{day[0, 4]}/#{day[5, 2]}/#{stream}.#{day}.log.gz"
-      @key ? ["#{plain}.enc", plain] : [plain, "#{plain}.enc"]
-    end
+    # What is left alone is not lost, but it must be possible to notice.
+    def report(keys, strays)
+      return if strays.zero?
 
-    # All the lines of the sources as plain text in one file. Returns what each source added.
-    # ponytail: with sort's own files this needs disk for three times a day's logs; feed sort
-    # through a pipe if that is ever too much.
-    def gather(sources, dir)
-      all = File.join(dir, "all")
-      FileUtils.touch(all)
-      Storage.fetch(storage, sources, dir) { |key, source| unpack(key, source) }.map do |source|
-        size = File.size(all)
-        File.open(all, "ab") { |file| IO.copy_stream(source, file) }
-        File.write(all, "\n", mode: "a") unless ends_with_line_break?(all) # or two lines would become one
-        File.delete(source) # so the sources and their lines are not both on disk
-        File.size(all) - size
-      end
-    end
-
-    # Puts a source's plain text in its place, in the thread that fetched it: a day of parts is a
-    # thousand runs of gzip. Encrypted or not, compressed or not, is read from the file itself: names
-    # and storages don't always agree.
-    def unpack(key, source)
-      File.rename(Cipher.unseal(source, "#{source}.open", keys), source) if Cipher.sealed?(source)
-      return unless File.binread(source, 2) == GZIP
-
-      system("gzip", "-dc", source, out: "#{source}.plain", err: File::NULL) ||
-        raise(Error, "#{key} cannot be read, is it damaged?")
-      File.rename("#{source}.plain", source)
-    end
-
-    # Puts the lines a shipper encrypted back as they were, so that sorting, and keeping a line once,
-    # are done on what the lines say. Costs one reading when there are none.
-    def decrypt_lines(all, line_keys)
-      system("grep", "-q", "^#{Cipher::LINE}", all)
-      found = Process.last_status.exitstatus
-      raise Error, "grep failed" unless [0, 1].include?(found) # or encrypted lines would go into the day's file
-      return if found == 1
-
-      File.open("#{all}.plain", "wb") do |plain|
-        File.foreach(all, mode: "rb") { |line| plain << Cipher.plain(line, line_keys) }
-      end
-      File.rename("#{all}.plain", all)
-    end
-
-    def ends_with_line_break?(path)
-      File.zero?(path) || File.open(path, "rb") { |file| file.seek(-1, IO::SEEK_END) && file.read(1) == "\n" }
-    end
-
-    # Every line starts with its time at a fixed width, so sorting the text sorts by time, and the
-    # system's sort does it on disk however large the day is. -u keeps a line that is there twice
-    # only once, which is what makes running again harmless.
-    # ponytail: two identical lines in the same nanosecond become one; number the lines in
-    # vector.yaml if that ever matters.
-    def sort(dir, stream, day)
-      all = File.join(dir, "all")
-      sorted = File.join(dir, "sorted")
-      decrypt_lines(all, Cipher.day_keys(keys, stream, day))
-      system({ "LC_ALL" => "C", "TMPDIR" => dir }, "sort", "-u", "-o", sorted, all) || raise(Error, "sort failed")
-      File.delete(all)
-      sorted
-    end
-
-    # The system's gzip and not Ruby's Zlib, here and in unpack: Zlib fails with BufError when any
-    # child process exits while it works (seen on Ruby 4.0), and a job worker starts processes often.
-    def pack(path)
-      system("gzip", "-n", path) || raise(Error, "gzip failed")
-      @key ? Cipher.seal("#{path}.gz", "#{path}.gz.enc", @key) : "#{path}.gz"
+      others = keys.filter_map { |key| key[PART, 1] }.uniq.reject { |stream| stream?(stream) }
+      warn "Logsafe leaves #{strays} files under #{PARTS} alone: not a stream's name, or not a date of the last year." \
+           "#{" Not in Logsafe.streams: #{others.first(5).join(", ")}" if others.any?}"
     end
   end
 end
+
+require_relative "logsafe/room"
+require_relative "logsafe/private_folder"
+require_relative "logsafe/storage"
+require_relative "logsafe/cipher"
+require_relative "logsafe/source"
+require_relative "logsafe/day"

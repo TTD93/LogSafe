@@ -98,7 +98,10 @@ RSpec.describe "from Docker through Vector to one file a day",
                      "ls /c/#{a}/*-json.log* | wc -l").to_i
     raise "the log file was not rotated, so rotation is not checked" unless rotated > 1
 
-    60.times { shipped == 300 ? break : sleep(1) }
+    60.times do
+      settle
+      shipped == 300 ? break : sleep(1)
+    end
     return docker("stop", vector) if shipped == 300
 
     logs, = Open3.capture2e("docker", "logs", "--tail", "20", vector) # both streams: Vector's log is on either
@@ -112,7 +115,7 @@ RSpec.describe "from Docker through Vector to one file a day",
       settle
       expect(part_lines).to all(match(part_line))
 
-      2.times { Logsafe.merge("e2e", today: "9999-12-31") }
+      2.times { Logsafe.merge("e2e", today: (Time.now.utc + (2 * 86_400)).strftime("%F")) }
 
       days = Logsafe.storage.keys("")
       expect(days).to all(match(%r{\A\d{4}/\d{2}/e2e\.\d{4}-\d{2}-\d{2}\.log\.gz#{suffix}\z}))
@@ -144,7 +147,7 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
     let(:run_options) { %w[-e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test] }
     let(:changes) do
-      { "bucket: my-logs" => "bucket: #{bucket}", /# endpoint: .*/ => "endpoint: http://logsafe-test-s3:9090",
+      { "bucket: my-logs" => "bucket: #{bucket}", /# endpoint: .*/ => "endpoint: http://logsafe-test-s3:7070",
         "timeout_secs: 60" => "timeout_secs: 2" }
     end
 

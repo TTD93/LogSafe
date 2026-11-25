@@ -1,5 +1,6 @@
 #!/bin/sh
-# Starts Vector, unless LOGSAFE_KEY is set to something that is not a key.
+# Starts Vector so that what it writes to a folder is not for everyone to read, as Docker's own log
+# files are not, and unless LOGSAFE_KEY is set to something that is not a key.
 # Vector cannot refuse a key itself: it would start, and drop every line it could not encrypt.
 # Stopping here loses nothing, because the lines wait in Docker's log files until Vector runs.
 #   docker run ... --entrypoint sh timberio/vector:0.62.0-alpine /etc/vector/start --config ...
@@ -13,4 +14,5 @@ if [ -n "${LOGSAFE_KEY:-}" ]; then
     exit 1
   fi
 fi
+umask 027
 exec vector "$@"
