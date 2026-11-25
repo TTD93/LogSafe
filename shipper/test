@@ -32,5 +32,7 @@ for try in $(seq 180); do
   sleep 1
 done
 
+# Here every spec has what it needs. One that is skipped all the same would look like one that passed.
 LOGSAFE_TEST_S3=http://127.0.0.1:9901 LOGSAFE_TEST_GCS=http://127.0.0.1:9902/ LOGSAFE_TEST_VECTOR=$VECTOR \
-  bundle exec rspec
+  bundle exec rspec | tee /dev/stderr | { ! grep -q 'examples, .* pending'; } ||
+  { echo "FAIL: a spec failed, or was skipped"; exit 1; }
