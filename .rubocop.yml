@@ -6,3 +6,23 @@ Style/StringLiterals:
 
 Style/StringLiteralsInInterpolation:
   EnforcedStyle: double_quotes
+
+Metrics/ClassLength:
+  Max: 120
+
+Metrics/ModuleLength:
+  Max: 120
+
+Metrics/BlockLength:
+  Exclude:
+    - spec/**/*
+
+Metrics/MethodLength:
+  Max: 15
+  Exclude:
+    - spec/**/*
+
+Metrics/AbcSize:
+  Max: 20
+  Exclude:
+    - spec/**/*

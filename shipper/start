@@ -1,0 +1,16 @@
+#!/bin/sh
+# Starts Vector, unless LOGSAFE_KEY is set to something that is not a key.
+# Vector cannot refuse a key itself: it would start, and drop every line it could not encrypt.
+# Stopping here loses nothing, because the lines wait in Docker's log files until Vector runs.
+#   docker run ... --entrypoint sh timberio/vector:0.62.0-alpine /etc/vector/start --config ...
+if [ -n "${LOGSAFE_KEY:-}" ]; then
+  # Decoded and encoded again it must be itself: this base64 takes more than Vector's does.
+  bytes=$(printf %s "$LOGSAFE_KEY" | base64 -d 2>/dev/null | wc -c)
+  again=$(printf %s "$LOGSAFE_KEY" | base64 -d 2>/dev/null | base64)
+  if [ "$bytes" -ne 32 ] || [ "$again" != "$LOGSAFE_KEY" ]; then
+    echo "LOGSAFE_KEY is not a key. It must be 32 bytes in Base64, as \`logsafe key\` prints it," \
+         "with nothing around it: no quotes, no spaces. Vector was not started." >&2
+    exit 1
+  fi
+fi
+exec vector "$@"

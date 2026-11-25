@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "logsafe"
+require "logger"
+require "open3"
+require "zlib"
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
