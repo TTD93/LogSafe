@@ -12,6 +12,10 @@ require_relative "logsafe/version"
 module Logsafe
   class Error < StandardError; end
 
+  # No lines arrive any more.
+  class Quiet < Error; end
+
+  autoload :CheckJob, "logsafe/check_job"
   autoload :MergeJob, "logsafe/merge_job"
   autoload :Reencrypt, "logsafe/reencrypt"
   autoload :ReencryptJob, "logsafe/reencrypt_job"
@@ -29,6 +33,7 @@ module Logsafe
   PART = %r{\A#{PARTS}(#{STREAM})/(\d{4}-\d{2}-\d{2})/[^[:cntrl:]]+\z}
   AGE = 366 # days. A part of a date before that is left alone: there are too many such dates to make up.
   RUN = 50 * 60 # seconds after which a merge starts with no other day, so that hourly runs do not pile up
+  QUIET = 90 * 60 # seconds without a line after which something is wrong: an hourly job logs in between
 
   class << self
     # Where the logs are: a folder, { s3: "bucket", ... } or { gcs: "bucket", ... }. See the README.
@@ -110,6 +115,20 @@ module Logsafe
       raise failures.first if failures.any?
     end
 
+    # Raises Quiet when no lines have arrived within that many seconds. Vector drops what the storage
+    # refuses and says so in its own log only, so without this nobody knows until they miss the lines.
+    # Each of the streams given must have had some. Without any, one of them all is enough: the app that
+    # runs the job hourly logs at least that, while another stream can be quiet for a whole night.
+    def check(*streams, within: QUIET)
+      oldest = Time.now - within
+      arrived = arrivals.select { |_, time| time >= oldest }.keys
+      quiet = streams.map(&:to_s) - arrived
+      return if streams.empty? ? arrived.any? : quiet.empty?
+
+      raise Quiet, "No lines have arrived#{" in #{quiet.join(", ")}" if quiet.any?} for #{within.to_i / 60} minutes. " \
+                   "Vector says why in its log on the servers: docker logs vector"
+    end
+
     # The parts among these keys, as { [stream, date] => keys }.
     def parts(keys)
       keys.group_by { |key| key.match(PART)&.captures }.select do |(stream, day), _|
@@ -143,6 +162,16 @@ module Logsafe
       parts = parts(keys).select { |(_, day), _| day >= oldest }
       report(keys, keys.size - parts.values.sum(&:size))
       parts
+    end
+
+    # { stream => when its newest part was written }
+    def arrivals
+      raise Error, "#{storage.class} has no method times, see the README" unless storage.respond_to?(:times)
+
+      times = storage.times(PARTS)
+      parts(times.keys).each_with_object({}) do |((stream, _), keys), newest|
+        newest[stream] = [newest[stream], *times.values_at(*keys)].compact.max
+      end
     end
 
     # What is left alone is not lost, but it must be possible to notice.

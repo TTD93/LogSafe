@@ -198,7 +198,19 @@ sent. The first time it starts, Vector also ships what is already in the log fil
 **Check `docker logs vector` after the first minute.** If the bucket's name or the key is wrong, Vector
 does not wait: it drops what the storage refuses. Vector's start-up health check also lists the bucket,
 which a write-only key may not do; if that is the only error, set `healthcheck: { enabled: false }`
-under the sink.
+under the sink. [The check](#5-the-check-in-the-same-app) tells you when it happens later.
+
+**When you change a file in `/etc/vector`,** Vector reads it again by itself within seconds; a file that is
+not valid changes nothing, and Vector's log says so. Two things need a new container, with
+`docker rm -f vector` and the same `docker run`: a key, because what is in `/etc/vector/keys` is read only
+when the container is made, and a new version of Vector. A change to `start` needs a
+`docker restart vector`, and so does a file that was mounted by itself, as Kamal does, and was replaced and
+not written over. To have Vector read its files only when it starts, put `VECTOR_WATCH_CONFIG=false` in
+`/etc/vector/keys`.
+
+With Kamal, `kamal setup` copies the files to a Vector that is running, and leaves its container alone. So
+Vector has the new files before the app is deployed, and also when that deploy then fails. After a change of
+a key, run `kamal accessory reboot vector`.
 
 ### 4. The merge job, in one Rails app
 
@@ -293,6 +305,33 @@ lists the bucket.
   in memory.
 - **Watch that it succeeds**, the way you watch your other jobs. A merge that fails silently leaves you
   with parts, not with nothing, but the parts keep piling up.
+
+### 5. The check, in the same app
+
+A merge with nothing to do succeeds, so it does not notice that no lines come. Have `Logsafe::CheckJob`
+run **every hour** too, and watch it the same way: it fails with `Logsafe::Quiet` when the storage has
+received no lines for 90 minutes, whatever the reason: Vector stopped, or the bucket's name, the key or
+its policy is wrong.
+
+```yaml
+# Solid Queue, config/recurring.yml
+production:
+  check_logs:
+    class: Logsafe::CheckJob
+    schedule: "45 * * * *"
+```
+
+- **A quiet night is no failure** as long as the container that runs the job ships its lines here: Active
+  Job logs some each time a job runs, at the level info. If it does not, give the job more time:
+  `Logsafe::CheckJob.perform_later(within: 24 * 60 * 60)`, in seconds.
+- **Without arguments one stream is enough,** whichever it is. With the names of streams, each of them must
+  have had lines: `Logsafe::CheckJob.perform_later("shop-prod-web", "shop-prod-worker")`. Use that to notice
+  when one of several servers stops, with a time that is long enough for the quietest of them.
+- **It looks at when the parts were written** and not into them. Lines that arrive and cannot be decrypted
+  are noticed by the merge.
+- **It says so every hour** until lines arrive again. Vector's own log, `docker logs vector` on the
+  servers, has the reason.
+- **The key of the app needs no more rights** than the merge has: it lists the parts.
 
 ## Reading the logs
 
@@ -537,6 +576,7 @@ Set them in `config/initializers/logsafe.rb`. None is read from the environment 
 | Job | The same, without a job | What it does |
 | --- | --- | --- |
 | `Logsafe::MergeJob.perform_later(*streams)` | `Logsafe.merge(*streams)` | Merges the finished days of these streams, or of all. Run it every hour. |
+| `Logsafe::CheckJob.perform_later(*streams, within: 5400)` | `Logsafe.check(*streams, within: 5400)` | Raises `Logsafe::Quiet`, which is a `Logsafe::Error`, when no lines arrived in that many seconds: in all, or in one of these streams. Run it every hour. |
 | `Logsafe::ReencryptJob.perform_later` | `Logsafe.reencrypt` | Encrypts with the key in use what is plain or under an old key. Run it after the key was set or changed. |
 | | `Logsafe.generate_key` | A new key, as `logsafe key` prints it. |
 | | `Logsafe.decrypt(from, into)` | Writes the gzip of a day's encrypted file to a path. |
@@ -556,7 +596,7 @@ The keys come from `LOGSAFE_KEY` and `LOGSAFE_OLD_KEYS`. It needs neither Rails 
 
 ### Storage of your own
 
-Any object with these five methods can be `Logsafe.storage`. What each has to promise is written in
+Any object with the first five of these methods can be `Logsafe.storage`. What each has to promise is written in
 [lib/logsafe/storage.rb](lib/logsafe/storage.rb), and `Logsafe::Storage::GCS` there is a short example.
 
 | Method | What it does |
@@ -566,6 +606,7 @@ Any object with these five methods can be `Logsafe.storage`. What each has to pr
 | `version(key)` | What tells the content the key has now from any other, or nil when there is none. |
 | `store(path, key, was)` | Copies a local file to the key if it still has the version `was`, and otherwise raises `Logsafe::Storage::Changed.new(key)`. |
 | `delete(keys)` | Removes them. One that is gone already is no failure. |
+| `times(prefix)` | The keys that start with the prefix, each with the `Time` it was last written, as a Hash. Only the check needs it. |
 
 Give it a `to_s` that says which storage it is, so that the page keeps two of them apart.
 
@@ -597,6 +638,8 @@ Give it a `to_s` that says which storage it is, so that the page keeps two of th
 - The whole path once more with a key, for the S3 stand-in: the parts hold only encrypted lines, and
   the merge job opens what Vector encrypted.
 - `shipper/start` with keys that are not keys, with a key and with none.
+- A file of Vector's that is changed while lines keep coming: it goes on with the new settings, and no line
+  is lost.
 
 `bundle exec rake` runs the part that needs no Docker: order, duplicates, late parts, a run that
 fails, today left alone, encryption with a right, a wrong and a missing key, a change of key with

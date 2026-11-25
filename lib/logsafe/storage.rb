@@ -10,7 +10,9 @@ module Logsafe
   #   store(path, key, was) copy a local file to the key, if the key still has the version it was, and
   #                         otherwise raise Changed: what was read before that is not the latest
   #   delete(keys)
-  # and says in to_s which storage it is, when one machine reads from more than one. One that cannot
+  # and, for Logsafe.check and nothing else, a sixth:
+  #   times(prefix)         { key => Time it was last written }, also for a part that is still being written
+  # It says in to_s which storage it is, when one machine reads from more than one. One that cannot
   # tell versions apart may give the same for every content: two runs at the same time are then not
   # kept from each other.
   module Storage
@@ -91,18 +93,9 @@ module Logsafe
         "folder:#{File.expand_path(@root)}"
       end
 
-      def keys(prefix)
-        within(prefix) do |folder|
-          Dir.glob("**/*", base: folder).filter_map do |name|
-            key = prefix + name
-            key if key.valid_encoding? && settled?(key, File.lstat(File.join(folder, name)))
-          rescue Errno::ENOENT
-            next # removed since it was listed
-          end
-        end
-      rescue Errno::ENOENT
-        []
-      end
+      def keys(prefix) = stats(prefix).select { |key, stat| settled?(key, stat) }.keys
+
+      def times(prefix) = stats(prefix).select { |_, stat| stat.file? }.transform_values(&:mtime)
 
       def fetch(key, path)
         within(File.dirname(key)) do |folder|
@@ -141,6 +134,20 @@ module Logsafe
       end
 
       private
+
+      # { key => stat of what it is, which can also be a folder or a link }
+      def stats(prefix)
+        within(prefix) do |folder|
+          Dir.glob("**/*", base: folder).filter_map do |name|
+            key = prefix + name
+            [key, File.lstat(File.join(folder, name))] if key.valid_encoding?
+          rescue Errno::ENOENT
+            next # removed since it was listed
+          end.to_h
+        end
+      rescue Errno::ENOENT
+        {}
+      end
 
       # Opened, and not only looked at: a network share then asks its server.
       def stamp(path)
@@ -239,6 +246,10 @@ module Logsafe
       def full(key)
         @prefix + key
       end
+
+      def short(name)
+        name.delete_prefix(@prefix)
+      end
     end
 
     # Amazon S3 and anything that speaks its protocol: DigitalOcean Spaces, MinIO, Garage, ...
@@ -249,7 +260,11 @@ module Logsafe
       end
 
       def keys(prefix)
-        @bucket.objects(prefix: full(prefix)).map { |object| object.key.delete_prefix(@prefix) }
+        @bucket.objects(prefix: full(prefix)).map { |object| short(object.key) }
+      end
+
+      def times(prefix)
+        @bucket.objects(prefix: full(prefix)).to_h { |object| [short(object.key), object.last_modified] }
       end
 
       def to_s
@@ -314,7 +329,11 @@ module Logsafe
       end
 
       def keys(prefix)
-        @bucket.files(prefix: full(prefix)).all.map { |file| file.name.delete_prefix(@prefix) }
+        @bucket.files(prefix: full(prefix)).all.map { |file| short(file.name) }
+      end
+
+      def times(prefix)
+        @bucket.files(prefix: full(prefix)).all.to_h { |file| [short(file.name), file.updated_at.to_time] }
       end
 
       def to_s

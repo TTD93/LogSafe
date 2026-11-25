@@ -28,9 +28,9 @@ RSpec.describe "from Docker through Vector to one file a day",
     status.success? ? output.strip : raise("docker #{arguments.join(" ")}: #{remarks}#{output}")
   end
 
-  def writer(text, *options)
+  def writer(text, *options, lines: 150)
     docker "create", "--label", "logsafe-e2e", *options, "alpine", "sh", "-c",
-           "for i in $(seq 1 150); do echo #{text} $i; sleep 0.02; done"
+           "for i in $(seq 1 #{lines}); do echo #{text} $i; sleep 0.02; done"
   end
 
   # The repository's own config, with its file pattern narrowed to these containers so that no other
@@ -78,17 +78,21 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
   end
 
+  def start_vector
+    docker "run", "-d", "--label", "logsafe-e2e", "--network", "logsafe-test", *run_options,
+           "-v", "#{config}:/etc/vector:ro", "-v", "/var/lib/vector",
+           "-v", "/var/lib/docker/containers:/var/lib/docker/containers:ro", "--entrypoint", "sh",
+           ENV.fetch("LOGSAFE_TEST_VECTOR"), "/etc/vector/start",
+           "--config", "/etc/vector/vector.yaml", "--config", "/etc/vector/sink.yaml"
+  end
+
   def ship(sink, changes)
     a = writer("a", "--label", "logs=e2e", "--log-opt", "labels=logs", "--log-opt", "max-size=4k",
                "--log-opt", "max-file=10")
     b = writer("b", "--label", "logs=e2e", "--log-opt", "labels=logs")
     noise = writer("noise")
     configure(sink, [a, b, noise], changes)
-    vector = docker "run", "-d", "--label", "logsafe-e2e", "--network", "logsafe-test", *run_options,
-                    "-v", "#{config}:/etc/vector:ro", "-v", "/var/lib/vector",
-                    "-v", "/var/lib/docker/containers:/var/lib/docker/containers:ro", "--entrypoint", "sh",
-                    ENV.fetch("LOGSAFE_TEST_VECTOR"), "/etc/vector/start",
-                    "--config", "/etc/vector/vector.yaml", "--config", "/etc/vector/sink.yaml"
+    vector = start_vector
 
     docker "start", a, b, noise
     sleep 1
@@ -152,6 +156,31 @@ RSpec.describe "from Docker through Vector to one file a day",
     end
 
     it_behaves_like "shipping", "to-s3.yaml"
+
+    # First to another folder, then, while the lines keep coming, to the one that the merge job reads.
+    it "goes on with what a changed file says, without a restart and without losing a line" do
+      Logsafe.storage = storage
+      old = Logsafe::Storage.build(s3: bucket, prefix: "old/", **options)
+      a = writer("a", "--label", "logs=e2e", "--log-opt", "labels=logs", lines: 600)
+      configure("to-s3.yaml", [a], changes.merge("key_prefix: \"logs/" => "key_prefix: \"old/"))
+      vector = start_vector
+      docker "start", a
+      60.times { old.keys("parts/e2e/").any? ? break : sleep(0.2) }
+
+      configure("to-s3.yaml", [a], changes)
+      docker "wait", a
+      before = numbers_in(old)
+      60.times { (before | numbers_in(storage)).size == 600 ? break : sleep(1) }
+
+      expect([before, numbers_in(storage)]).to all(be_any)
+      expect((numbers_in(old) | numbers_in(storage)).sort).to eq((1..600).to_a)
+      expect(docker("inspect", "-f", "{{.RestartCount}}", vector)).to eq "0"
+    end
+
+    def numbers_in(storage)
+      Logsafe.storage = storage
+      part_lines.map { |line| line.split.last.to_i }
+    end
 
     # What Vector encrypts, line by line, the merge job has to open with the same key.
     context "when encrypted" do

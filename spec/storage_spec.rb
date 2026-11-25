@@ -57,6 +57,18 @@ RSpec.shared_examples "a storage" do
     expect(storage.keys("2026/11/")).to eq ["2026/11/web.2026-11-20.log.gz"]
   end
 
+  it "tells when each key was written" do
+    before = Time.now - 5 # the storage's clock, and some count whole seconds
+    put "parts/web/2026-11-20/a.log", "one\n"
+    put "2026/11/web.2026-11-20.log.gz", "two\n"
+
+    times = storage.times("parts/")
+    expect(times.keys).to eq ["parts/web/2026-11-20/a.log"]
+    expect(times.values.first).to be_a(Time).and be_between(before, Time.now + 5)
+    expect { Logsafe.check("web") }.not_to raise_error
+    expect { Logsafe.check("web", "worker") }.to raise_error(Logsafe::Quiet, /in worker for/)
+  end
+
   it "does not store over what it was not given the version of" do
     key = "2026/11/web.2026-11-20.log.gz"
     expect(storage.version(key)).to be_nil

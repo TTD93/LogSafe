@@ -15,4 +15,7 @@ if [ -n "${LOGSAFE_KEY:-}" ]; then
   fi
 fi
 umask 027
+# Vector then reads its files again when they change. A file that is not valid changes nothing, and what
+# came from the environment, such as the keys, stays as it was until the container is made again.
+export VECTOR_WATCH_CONFIG="${VECTOR_WATCH_CONFIG:-true}"
 exec vector "$@"

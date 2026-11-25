@@ -3,6 +3,19 @@
 The versions follow [Semantic Versioning](https://semver.org). Until 1.0, a minor version can change
 what is in the README's Reference.
 
+## [0.4.0] - 2026-11-25
+
+- **When no lines arrive:** `Logsafe::CheckJob`, or `Logsafe.check`, fails with `Logsafe::Quiet` when the
+  storage has received no lines for 90 minutes, or for as long as you say. Vector drops what the storage
+  refuses and tells only its own log, so until now nobody knew before they missed the lines. A storage
+  of your own needs one more method for it, `times`.
+- **Vector reads its files again when they change**, if you take the new `shipper/start`. A file that is not
+  valid changes nothing. Keys come from the environment, and for those the container has to be made
+  again, as before. Set `VECTOR_WATCH_CONFIG=false` in Vector's environment to turn it off.
+
+  **If Vector is already running,** copy `shipper/start` to the servers again and restart Vector once. Until
+  then it goes on as before. Nothing else has to change.
+
 ## [0.3.0] - 2026-11-25
 
 - **In a bucket** the logs are now in the folder `logs/`: `logs/2026/11/<stream>.<date>.log.gz` and
