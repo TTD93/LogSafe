@@ -36,8 +36,8 @@ You can also [search the logs in the browser](#in-the-browser), on a page you mo
 
 **Contents:** [Requirements](#requirements) · [Try it](#try-it) · [Setup](#setup) ·
 [Reading the logs](#reading-the-logs) · [Lograge and other loggers](#lograge-and-other-loggers) ·
-[Encryption](#encryption) · [Reference](#reference) · [What can still be lost](#what-can-still-be-lost) ·
-[Good to know](#good-to-know) · [What has been run](#what-has-been-run) · [Development](#development)
+[Encryption](#encryption) · [Reference](#reference) · [Good to know](#good-to-know) ·
+[What has been run](#what-has-been-run) · [Development](#development) · [Disclaimer](#disclaimer)
 
 ## Requirements
 
@@ -567,26 +567,6 @@ Any object with these five methods can be `Logsafe.storage`. What each has to pr
 
 Give it a `to_s` that says which storage it is, so that the page keeps two of them apart.
 
-## What can still be lost
-
-| What happens | What is lost |
-| --- | --- |
-| The app crashes or is killed | Nothing. A line written to STDOUT has already left the process. |
-| The network or the storage is down | Nothing, for as long as it fits on the server: 1 GB in Vector's buffer, then Docker's own log files up to their limit. |
-| The merge job or the job backend is down | Nothing. The parts wait. |
-| The server loses power | The last few seconds, which the system had not yet written to disk. |
-| The server's disk is destroyed | What was not sent yet: up to a minute. |
-| A container is removed (`docker rm`, `--rm`, a deploy tidying up) | Its log file goes with it. Normally Vector has read all but the last second or less. If Vector was down, everything it had not read from that container. |
-| Vector is down for a long time | Lines that Docker's rotation (`max-size` × `max-file`) removed meanwhile. |
-| The bucket's name or the key is wrong | What Vector tried to send meanwhile. While the lines are still in Docker's log files you can get them back: correct the setting, remove the `vector-data` volume and start Vector again. It ships everything again, and the merge drops what it already has. |
-| A file in the bucket is deleted or overwritten | Nothing, with versioning on. |
-
-So watch that Vector is running and not logging errors, not only that the merge succeeds.
-
-Nothing can promise that no line is ever lost without making the app wait for each line to be stored.
-What must never be lost, such as an audit trail, belongs in your database, saved together with the
-change it describes.
-
 ## Good to know
 
 - **One file per day** holds once the day is over and two merges have run. During the day there are
@@ -648,6 +628,22 @@ paste real log lines or keys into an issue.
 To publish a version: set it in `lib/logsafe/version.rb`, run `bundle install`, name it with its date in
 [CHANGELOG.md](CHANGELOG.md), merge to `master`, wait for CI, and run `bundle exec rake release` there.
 That builds the gem, pushes the tag, and pushes the gem to RubyGems, which asks for a second factor.
+
+## Disclaimer
+
+Logsafe comes as is, without warranty of any kind, and its authors are not liable for any loss or damage
+from using it. The [license](LICENSE.txt) has the exact terms.
+
+Log lines can be lost, for instance when a server's disk dies before Vector has sent them, or when a
+container is removed while Vector is down. Don't make Logsafe the only place for anything you have to
+keep, such as an audit trail or records the law requires. Save those in your database.
+
+Try it on your own setup before you depend on it: [What has been run](#what-has-been-run) says what has
+been tested and what has not. Your keys, who can reach the page and the storage, the personal data in
+your logs and the storage bill are your responsibility. If you lose the encryption key, nobody can
+recover the logs.
+
+Logsafe is not affiliated with or endorsed by the makers of the products named in this README.
 
 ## License
 
