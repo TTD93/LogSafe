@@ -1,0 +1,23 @@
+# Amazon S3, and anything that speaks its protocol: DigitalOcean Spaces, MinIO, Garage, ...
+# The access key comes from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+sinks:
+  storage:
+    type: aws_s3
+    inputs: [lines]
+    bucket: my-logs
+    region: us-east-1
+    # endpoint: https://ams3.digitaloceanspaces.com
+    key_prefix: "parts/{{ stream }}/{{ day }}/"
+    encoding:
+      codec: text
+    framing:
+      method: newline_delimited
+    compression: gzip
+    batch:
+      timeout_secs: 60 # the most that is lost if this server's disk is destroyed
+    buffer:
+      type: disk # lines wait here while the storage can't be reached
+      max_size: 1073741824
+      when_full: block
+    acknowledgements:
+      enabled: true # a line counts as read only once it is safely in the buffer

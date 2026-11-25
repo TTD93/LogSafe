@@ -1,10 +1,7 @@
 name: Ruby
 
 on:
-  push:
-    branches:
-      - master
-
+  push: # every branch, so a branch is tested before there is a pull request for it
   pull_request:
 
 permissions:
@@ -12,6 +9,8 @@ permissions:
 
 jobs:
   build:
+    # A pull request from a branch of this repository was already tested when the branch was pushed.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     name: Ruby ${{ matrix.ruby }}
     strategy:
@@ -28,5 +27,8 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run the default task
+      - name: Specs and RuboCop
         run: bundle exec rake
+      # The same specs again, plus the ones that need Docker: Vector, and stand-ins for S3 and Google Cloud Storage.
+      - name: End to end, with Docker
+        run: shipper/test

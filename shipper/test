@@ -1,0 +1,38 @@
+#!/bin/bash
+# Runs every check, including the ones `rake` skips because they need Docker:
+# Vector's own tests of vector.yaml, the S3 and Google Cloud Storage code against local
+# stand-ins, and the whole path from a container's output to one file a day.
+# Starts throwaway containers on this machine and removes them again; touches nothing else.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+VECTOR=timberio/vector:0.62.0-alpine
+net=logsafe-test
+
+cleanup() {
+  docker rm -f $(docker ps -aq --filter label=logsafe-test; docker ps -aq --filter label=logsafe-e2e) >/dev/null 2>&1 || true
+  docker network rm $net >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+cleanup
+
+for sink in to-s3 to-gcs to-folder; do
+  docker run --rm -v "$PWD/shipper:/etc/vector:ro" $VECTOR validate --no-environment \
+    /etc/vector/vector.yaml /etc/vector/$sink.yaml >/dev/null || { echo "FAIL: $sink.yaml is not valid"; exit 1; }
+done
+docker run --rm -v "$PWD/shipper:/etc/vector:ro" $VECTOR test /etc/vector/vector.yaml /etc/vector/to-folder.yaml
+
+docker network create $net >/dev/null
+docker run -d --label logsafe-test --network $net --name $net-s3 -p 127.0.0.1:9901:9090 adobe/s3mock >/dev/null
+docker run -d --label logsafe-test --network $net --name $net-gcs -p 127.0.0.1:9902:4443 \
+  fsouza/fake-gcs-server -scheme http -port 4443 -external-url http://127.0.0.1:9902 >/dev/null
+for try in $(seq 180); do
+  curl -sf http://127.0.0.1:9901/ >/dev/null && curl -sf http://127.0.0.1:9902/storage/v1/b >/dev/null && break
+  [ "$try" -lt 180 ] || { echo "FAIL: the stand-ins did not start within three minutes"; exit 1; }
+  sleep 1
+done
+
+# Here every spec has what it needs. One that is skipped all the same would look like one that passed.
+LOGSAFE_TEST_S3=http://127.0.0.1:9901 LOGSAFE_TEST_GCS=http://127.0.0.1:9902/ LOGSAFE_TEST_VECTOR=$VECTOR \
+  bundle exec rspec | tee /dev/stderr | { ! grep -q 'examples, .* pending'; } ||
+  { echo "FAIL: a spec failed, or was skipped"; exit 1; }

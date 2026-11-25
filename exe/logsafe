@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "logsafe"
+require "tempfile"
+
+USAGE = <<~TEXT
+  logsafe key                               prints a new key
+  logsafe decrypt FILE | gzip -dc           prints a day's file
+  ... | logsafe decrypt STREAM YYYY-MM-DD   prints the lines of that stream's and day's parts
+  The key to decrypt with comes from LOGSAFE_KEY, and keys that were in use before from LOGSAFE_OLD_KEYS.
+TEXT
+
+begin
+  use_keys = lambda do
+    Logsafe.key = ENV.fetch("LOGSAFE_KEY") { abort "Set LOGSAFE_KEY to the key the logs were encrypted with." }
+    Logsafe.old_keys = ENV.fetch("LOGSAFE_OLD_KEYS", nil)
+  end
+  case ARGV
+  in ["key"]
+    puts Logsafe.generate_key
+  in ["decrypt", file]
+    use_keys.call
+    # Into a file first: nothing is printed before the whole file has been checked.
+    Tempfile.create("logsafe") do |gzip|
+      Logsafe.decrypt(file, gzip.path)
+      IO.copy_stream(gzip.path, $stdout)
+    end
+  in ["decrypt", stream, day]
+    use_keys.call
+    line_keys = Logsafe::Cipher.day_keys(Logsafe.keys, stream, day)
+    $stdin.each_line { |line| $stdout << Logsafe::Cipher.plain(line, line_keys) }
+  else
+    abort USAGE
+  end
+rescue Logsafe::Error, SystemCallError => e
+  abort e.message
+end

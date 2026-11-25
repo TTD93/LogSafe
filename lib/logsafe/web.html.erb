@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Logs</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #17212b; --raised: #1e2a36; --bar: #223040; --edge: #3d5066; --well: #111a23;
+    --text: #d5dce4; --dim: #8494a6; --link: #8ec5ff; --amber: #f2c744; --red: #e5534b;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--ink); color: var(--text); font: 13px/1.55 var(--mono); }
+  a { color: var(--link); }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+
+  /* Upside down, so the page opens at its end: the newest line, just above the search. */
+  main { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column-reverse; }
+  ol { list-style: none; margin: 0; padding: 8px 0; }
+  li { padding: 1px 16px 1px 13px; border-left: 3px solid transparent; white-space: pre-wrap; overflow-wrap: anywhere; }
+  li:hover { background: var(--raised); }
+  li.error { border-left-color: var(--red); color: #ffb4aa; }
+  li.warn { border-left-color: var(--amber); color: #f0d48a; }
+  time { color: var(--dim); }
+  mark { background: var(--amber); color: var(--ink); border-radius: 2px; padding: 0 1px; }
+  .turn { display: block; padding: 10px 16px; }
+  .note { margin: 0; padding: 24px 16px; max-width: 72ch; color: var(--dim); font: 14px/1.5 system-ui, sans-serif; }
+  .note + .note { padding-top: 0; }
+  .note.problem { color: #ffb4aa; }
+
+  form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 10px; padding: 10px 16px 12px;
+         background: var(--bar); border-top: 1px solid var(--edge); font: 12px system-ui, sans-serif; }
+  label { display: grid; gap: 3px; color: #a9b6c5; }
+  label.words { flex: 1 1 260px; }
+  input, select, button { height: 34px; padding: 0 10px; border: 1px solid var(--edge); border-radius: 4px;
+                          background: var(--well); color: var(--text); font: 14px system-ui, sans-serif; }
+  input[type=search] { width: 100%; font-family: var(--mono); }
+  button { border-color: var(--amber); background: var(--amber); color: var(--ink); font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+<%- @problems.each do |problem| -%>
+    <p class="note problem"><%= h(problem) %></p>
+<%- end -%>
+<%- if @cut -%>
+    <p class="note">A search spans <%= MAX_DAYS %> days at most, so this one starts on <%= @from %>.</p>
+<%- end -%>
+<%- if @lines.empty? && @problems.empty? -%>
+    <p class="note"><%= @streams.empty? ? "The storage has no logs for these days." : "No lines match. Try fewer words, another level or other days." %></p>
+<%- end -%>
+<%- if older -%>
+    <a class="turn" href="<%= h(older) %>">Show older lines</a>
+<%- end -%>
+    <ol>
+<%- @lines.each do |stream, line| -%>
+<%- kind, time, text = row(line) -%>
+      <li<%= %( class="#{kind}") if kind %>><time datetime="<%= h(time) %>"><%= h(time.to_s[0, 23].tr("T", " ")) %></time> <b style="color: hsl(<%= hue(stream) %> 65% 72%)"><%= h(stream) %></b> <%= marked(text) %></li>
+<%- end -%>
+    </ol>
+<%- if @before -%>
+    <a class="turn" href="<%= h(link(before: nil)) %>">Back to the newest lines</a>
+<%- end -%>
+  </div>
+</main>
+<form method="get">
+  <label class="words">Words, all must be in the line
+    <input type="search" name="q" value="<%= h(@query) %>" autofocus autocomplete="off" spellcheck="false">
+  </label>
+  <label>Stream
+    <select name="stream">
+      <option value="">All streams</option>
+<%- (@streams | [*@stream]).each do |stream| -%>
+      <option<%= " selected" if stream == @stream %>><%= h(stream) %></option>
+<%- end -%>
+    </select>
+  </label>
+  <label>Level
+    <select name="level">
+      <option value="">Any level</option>
+<%- Logsafe::Search::LEVELS.each_key do |level| -%>
+      <option<%= " selected" if level == @level %>><%= level %></option>
+<%- end -%>
+    </select>
+  </label>
+  <label>From (UTC)
+    <input type="date" name="from" value="<%= @from %>" required>
+  </label>
+  <label>To (UTC)
+    <input type="date" name="to" value="<%= @to %>" required>
+  </label>
+  <button>Search</button>
+</form>
+</body>
+</html>

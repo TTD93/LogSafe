@@ -1,0 +1,19 @@
+# A folder: a disk on this server, a mounted volume or a network share.
+# Mount the folder into the Vector container at /logs.
+sinks:
+  storage:
+    type: file
+    inputs: [lines]
+    # A new file per server every minute, so that a file is soon finished: the merge job
+    # leaves a file alone until it has not changed for two minutes.
+    path: "/logs/parts/{{ stream }}/{{ day }}/{{ slot }}-{{ host }}.log"
+    encoding:
+      codec: text
+    framing:
+      method: newline_delimited
+    buffer:
+      type: disk # lines wait here while the storage can't be reached
+      max_size: 1073741824
+      when_full: block
+    acknowledgements:
+      enabled: true # a line counts as read only once it is safely in the buffer
