@@ -31,7 +31,7 @@ RSpec.shared_examples "a storage" do
     expect(storage.keys("2026/11/")).to eq ["2026/11/web.2026-11-20.log.gz"]
     expect(get("parts/web/2026-11-20/b.log")).to eq "two again\n"
 
-    storage.delete(["parts/web/2026-11-20/a.log", "parts/web/2026-11-20/b.log"])
+    2.times { storage.delete(["parts/web/2026-11-20/a.log", "parts/web/2026-11-20/b.log"]) } # as two runs would
     expect(storage.keys("parts/")).to eq []
     expect(storage.keys("2026/11/")).to eq ["2026/11/web.2026-11-20.log.gz"]
   end
