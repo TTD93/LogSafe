@@ -29,6 +29,7 @@
   mark { background: var(--amber); color: var(--ink); border-radius: 2px; padding: 0 1px; }
   .turn { display: block; padding: 10px 16px; }
   .note { margin: 0; padding: 24px 16px; max-width: 72ch; color: var(--dim); font: 14px/1.5 system-ui, sans-serif; }
+  .note + .note { padding-top: 0; }
   .note.problem { color: #ffb4aa; }
 
   form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 10px; padding: 10px 16px 12px;
@@ -44,10 +45,14 @@
 <body>
 <main>
   <div>
-<%- if @error -%>
-    <p class="note problem"><%= h(@error) %></p>
-<%- elsif @lines.empty? -%>
-    <p class="note"><%= @streams.empty? ? "The storage has no logs for these days." : "No lines match. Try fewer words, another level or more days." %></p>
+<%- @problems.each do |problem| -%>
+    <p class="note problem"><%= h(problem) %></p>
+<%- end -%>
+<%- if @cut -%>
+    <p class="note">A search spans <%= MAX_DAYS %> days at most, so this one starts on <%= @from %>.</p>
+<%- end -%>
+<%- if @lines.empty? && @problems.empty? -%>
+    <p class="note"><%= @streams.empty? ? "The storage has no logs for these days." : "No lines match. Try fewer words, another level or other days." %></p>
 <%- end -%>
 <%- if older -%>
     <a class="turn" href="<%= h(older) %>">Show older lines</a>
@@ -70,7 +75,7 @@
   <label>Stream
     <select name="stream">
       <option value="">All streams</option>
-<%- @streams.each do |stream| -%>
+<%- (@streams | [*@stream]).each do |stream| -%>
       <option<%= " selected" if stream == @stream %>><%= h(stream) %></option>
 <%- end -%>
     </select>

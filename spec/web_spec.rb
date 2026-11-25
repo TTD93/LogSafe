@@ -8,7 +8,8 @@ RSpec.describe Logsafe::Web do
 
   before do
     Logsafe.storage = root
-    allow(Logsafe::Search).to receive(:dir).and_return(copies)
+    allow(Logsafe::Copies).to receive(:dir).and_return(copies)
+    stub_const("Logsafe::Search::LIST_FOR", 0) # the specs change the storage and look again at once
   end
 
   after do
@@ -131,15 +132,85 @@ RSpec.describe Logsafe::Web do
   it "deletes its copy of a day that nobody looked at for half an hour" do
     part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
     shown(day("2026-11-20"))
+    expect(Dir.children(copies).map { |name| File.extname(name) }).to contain_exactly(".keys", ".lock", ".log")
+
+    Logsafe::Copies.sweep
     expect(Dir.children(copies).size).to eq 3
 
-    Logsafe::Search.sweep
-    expect(Dir.children(copies).size).to eq 3
-
+    FileUtils.mkdir(File.join(copies, "abc123.left-by-a-search-that-was-cut-off"))
     Dir.children(copies).each { |name| File.utime(Time.now - 1801, Time.now - 1801, File.join(copies, name)) }
-    Logsafe::Search.sweep
-    expect(Dir.children(copies)).to eq ["lock"]
+    Logsafe::Copies.sweep
+    expect(Dir.children(copies).map { |name| File.extname(name) }.uniq).to eq [".lock"]
     expect(shown(day("2026-11-20"))).to eq ["a1"]
+  end
+
+  it "goes on from where a fetch was cut off" do
+    stub_const("Logsafe::Copies::SLICE", 1)
+    allow(Logsafe.storage).to receive(:fetch).and_call_original
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    part "web/2026-11-20/b.log.gz", "not gzip"
+    File.binwrite(File.join(root, "parts/web/2026-11-20/b.log.gz"), "\x1F\x8Bbroken".b)
+    File.utime(Time.now - 600, Time.now - 600, File.join(root, "parts/web/2026-11-20/b.log.gz"))
+    expect(get(day("2026-11-20")).last).to include "b.log.gz cannot be read"
+
+    part "web/2026-11-20/b.log.gz", "2026-11-20T10:00:00.000000002Z b1"
+
+    expect(shown(day("2026-11-20"))).to eq %w[a1 b1]
+    expect(Logsafe.storage).to have_received(:fetch).exactly(3).times # a once, b twice
+  end
+
+  it "says so when another search is fetching the same day, and does not wait for it" do
+    stub_const("Logsafe::Copies::WAIT", 0)
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    shown(day("2026-11-20"))
+
+    File.open(Dir.glob(File.join(copies, "*.lock")).first) do |other|
+      other.flock(File::LOCK_EX)
+      expect(get(day("2026-11-20")).last).to include "another search is fetching these logs"
+    end
+    expect(shown(day("2026-11-20"))).to eq ["a1"]
+  end
+
+  it "says so when the merge job removed a part while it was read" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    allow(Logsafe.storage).to receive(:fetch) do
+      FileUtils.rm_rf(File.join(root, "parts"))
+      raise Errno::ENOENT
+    end
+
+    expect(get(day("2026-11-20")).last).to include "the storage changed while it was read"
+  end
+
+  it "leaves an error of the storage to the app" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    allow(Logsafe.storage).to receive(:fetch).and_raise(IOError, "network")
+
+    expect { get(day("2026-11-20")) }.to raise_error(IOError)
+  end
+
+  it "keeps the logs of two storages apart" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z here"
+    shown(day("2026-11-20"))
+    other = Dir.mktmpdir("logsafe-spec")
+    FileUtils.mkdir_p(File.join(other, "parts/web/2026-11-20"))
+    File.write(File.join(other, "parts/web/2026-11-20/a.log"), "2026-11-20T10:00:00.000000001Z there\n")
+    File.utime(Time.now - 600, Time.now - 600, File.join(other, "parts/web/2026-11-20/a.log"))
+
+    Logsafe.storage = other
+
+    expect(shown(day("2026-11-20"))).to eq ["there"]
+  ensure
+    FileUtils.rm_rf(other)
+  end
+
+  it "searches a week at most, and says so" do
+    part "web/2026-11-10/a.log", "2026-11-10T10:00:00.000000001Z too far back"
+    part "web/2026-11-14/a.log", "2026-11-14T10:00:00.000000001Z in reach"
+
+    page = get(from: "2026-11-01", to: "2026-11-20").last
+
+    expect(page).to include "A search spans 7 days at most, so this one starts on 2026-11-14."
+    expect(shown(from: "2026-11-01", to: "2026-11-20")).to eq ["in reach"]
   end
 
   context "with a key" do
@@ -157,13 +228,14 @@ RSpec.describe Logsafe::Web do
       expect(shown(day("2026-11-20"))).to eq %w[a1 a2]
     end
 
-    it "says why it shows nothing when the key is not set" do
+    it "says which stream it cannot read without the key, and shows the others" do
       Logsafe.key = nil
+      part "worker/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z w1"
 
-      status, page = get(day("2026-11-20"))
+      page = get(day("2026-11-20")).last
 
-      expect(status).to eq 500
-      expect(page).to include "this is encrypted and Logsafe.key is not set"
+      expect(page).to include "web 2026-11-20: this is encrypted and Logsafe.key is not set"
+      expect(shown(day("2026-11-20"))).to eq ["w1"]
     end
   end
 end

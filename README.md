@@ -243,20 +243,33 @@ mount Logsafe::Web, at: "admin/logsafe",
                     constraints: ->(request) { User.find_by(id: request.session[:user_id])&.admin? }
 ```
 
-- **Words:** a line must hold every word you type, in any case.
+- **Words:** a line must hold every word you type, in any case (for the letters a to z). The first
+  eight words count.
 - **Level:** Docker does not know a line's level, so the page looks for the word in the line: `ERROR`,
   `level=error` and `"level":"error"` are all found by "error". Lines without the word, such as the
   lines of a stack trace, are not. Rails' production logger does not print the level; give it a
   formatter that does, for example
   `config.logger = ActiveSupport::TaggedLogging.logger(STDOUT, formatter: Logger::Formatter.new)`.
-- **It shows 500 lines** at a time, with a link to the ones before. Times and days are UTC.
+- **It shows 500 lines** at a time, with a link to the ones before. Times and days are UTC. A search
+  spans seven days at most.
 - **The first search of a day waits** while the server fetches that day: its file, or for today every
-  part so far. After that only new parts are fetched. A very large day can take longer than a proxy
-  in front of your app allows; the copy is finished all the same, so load the page again.
+  part so far. After that only new parts are fetched, and the storage is listed once a minute at
+  most. A very large day can take longer than a proxy in front of your app allows. What was fetched
+  is kept, a thousand parts at a time, so load the page again and it goes on from there. While one
+  search fetches a day, another search for the same day is told so and does not wait.
 - **The server keeps a copy** of each day you search, in plain text, in a folder of its own in the
   temporary folder, until nobody has searched that day for 30 minutes. It needs the disk for those
-  days, uncompressed, and the `sort`, `gzip`, `grep`, `awk` and `tail` commands.
-- **New lines** appear once Vector has shipped them: about a minute, or two with a folder.
+  days, uncompressed, and about three times a day's size more while it fetches one; and the `sort`,
+  `gzip`, `grep`, `awk` and `tail` commands. Each server keeps its own copies: with several servers
+  behind a load balancer, each fetches a day the first time a search for it lands there.
+- **One stream that cannot be read**, because a part is damaged or was encrypted with another key,
+  is named on the page, and the other streams are shown.
+- **New lines** appear once Vector has shipped them and the storage is listed again: one to two
+  minutes, or up to four with a folder.
+- **Run the merge job no more often than every half hour** if you use the page. A copy knows what it
+  holds by the names of the files. A part that arrives late for a finished day is listed for as long
+  as two merges are apart, and a copy that is in use all that time sees it only if that is longer
+  than the 30 minutes a copy can go unused.
 
 ## Encryption
 
@@ -432,8 +445,9 @@ change it describes.
 `bundle exec rake` runs the part that needs no Docker: order, duplicates, late parts, a run that
 fails, today left alone, encryption with a right, a wrong and a missing key, a change of key with
 everything encrypted again, plain files and lines encrypted afterwards, the jobs through Active
-Job, and the page in the browser as a Rack app: its searches, an address that was made up, and the
-removal of its copies.
+Job, and the page in the browser as a Rack app: its searches, an address that was made up, a fetch
+that is cut off, a part that is removed meanwhile, two searches for one day, and the removal of its
+copies.
 
 Not run: the page mounted in a Rails app, and the routing examples for it; real AWS, Google or
 DigitalOcean storage; Vector sending to Google Cloud Storage (the stand-in
