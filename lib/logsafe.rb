@@ -16,6 +16,7 @@ module Logsafe
   autoload :MergeJob, "logsafe/merge_job"
   autoload :Reencrypt, "logsafe/reencrypt"
   autoload :ReencryptJob, "logsafe/reencrypt_job"
+  autoload :Copies, "logsafe/copies"
   autoload :Search, "logsafe/search"
   autoload :Web, "logsafe/web"
 
@@ -84,9 +85,10 @@ module Logsafe
     end
 
     # The lines of these keys of one stream and day, decrypted and sorted, in a file in dir. Returns its path.
-    def lines(stream, day, sources, dir)
+    # A day's file is in order as it is: say so, and it is not sorted again.
+    def lines(stream, day, sources, dir, sorted: false)
       gather(sources, dir)
-      sort(dir, stream, day)
+      sorted ? File.join(dir, "all") : sort(dir, stream, day)
     end
 
     private

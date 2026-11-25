@@ -12,7 +12,7 @@ module Logsafe
     include ERB::Util
 
     PAGE = ERB.new(File.read(File.join(__dir__, "web.html.erb")), trim_mode: "-")
-    MAX_DAYS = 31
+    MAX_DAYS = 7 # each day searched is fetched, and kept on this machine for a while
     TIME = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\z/
     LOUD = /\b(?:(fatal|error)|warn(?:ing)?)\b/i
     HEADERS = {
@@ -21,8 +21,8 @@ module Logsafe
       "x-frame-options" => "DENY",
       "content-security-policy" => "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
     }.freeze
+    # Each response gets a copy of its own: what stands in front of this app, such as Rack::ETag, adds to them.
     TEXT = { "content-type" => "text/plain" }.freeze
-    # Each response gets headers of its own: what stands in front of this app, such as Rack::ETag, adds to them.
 
     def self.call(env)
       return [405, TEXT.merge("allow" => "GET, HEAD"), ["Only GET"]] unless %w[GET HEAD].include?(env["REQUEST_METHOD"])
@@ -38,29 +38,36 @@ module Logsafe
     # Nothing from the address is used before it is checked: these values end up in paths and commands.
     def initialize(params, today: Time.now.utc.to_date)
       @to = date(params["to"]) || today
-      @from = (date(params["from"]) || today).clamp(@to - (MAX_DAYS - 1), @to)
-      @stream = params["stream"]
+      @from, @cut = from(date(params["from"]) || today)
+      @stream = params["stream"].to_s[/.+/m] # none when it is empty
       @level = params["level"] if Search::LEVELS.key?(params["level"])
       @before = params["before"].to_s[TIME]
       @query = params["q"].to_s.strip
       @streams = []
       @lines = []
+      @problems = []
     end
 
     # What Logsafe itself refuses, such as a missing key, is said on the page. The rest is the app's to handle.
+    # The stream asked for is only compared with the ones there are: a name that is none finds nothing.
     def response
       days = Search.sources(@from, @to)
       @streams = days.keys.map(&:first).uniq.sort
-      @stream = nil unless @streams.include?(@stream)
       days = days.select { |(stream, _), _| stream == @stream } if @stream
-      @lines = Search.call(days, words: @query.split, level: @level, before: @before)
+      @lines, @problems = Search.call(days, words: @query.split, level: @level, before: @before)
       [200, HEADERS.dup, [PAGE.result(binding)]]
     rescue Error => e
-      @error = e.message
+      @problems = [e.message]
       [500, HEADERS.dup, [PAGE.result(binding)]]
     end
 
     private
+
+    # The first day to search, and whether that is later than was asked for.
+    def from(asked)
+      from = asked.clamp(@to - (MAX_DAYS - 1), @to)
+      [from, asked < from]
+    end
 
     def date(text)
       Date.strptime(text, "%Y-%m-%d") if text.to_s.match?(DATE)
