@@ -8,10 +8,11 @@ Gem::Specification.new do |spec|
   spec.authors = ["tin.trung.duong"]
   spec.email = ["tin@costtracker.no"]
 
-  spec.summary = "One sorted log file per day in your own bucket, merged by a background job."
-  spec.description = "A log shipper puts your containers' logs in S3, Google Cloud Storage or a folder. " \
-                     "This job, run by Solid Queue, Sidekiq or any other Active Job backend, turns them " \
-                     "into one sorted file per day. A cheap alternative to hosted logging."
+  spec.summary = "One sorted log file per day in your own bucket, with a page to search them on."
+  spec.description = "Keep your Docker containers' logs in S3, Google Cloud Storage or a folder, without paying " \
+                     "for hosted logging. Vector ships the lines, a background job on any Active Job backend " \
+                     "merges each day into one sorted, compressed file, and a page you mount in your app " \
+                     "searches them. Lines can be encrypted before they leave the server."
   spec.homepage = "https://github.com/TTD93/LogSafe"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3.0"

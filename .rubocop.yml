@@ -16,6 +16,7 @@ Metrics/ModuleLength:
 Metrics/BlockLength:
   Exclude:
     - spec/**/*
+    - logsafe.gemspec
 
 Metrics/MethodLength:
   Max: 15
