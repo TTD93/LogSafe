@@ -52,15 +52,26 @@ Solid Queue, Sidekiq, GoodJob, Resque, or cron.
   }
   ```
 
-  A server that is broken into can then neither read nor delete logs.
+  A server that is broken into can then neither read nor delete logs. It can still add lines of its
+  own, under any stream the key covers.
 - Make one more key for the merge job, allowed to list, read, write and delete in the bucket.
 
 **A folder (a disk on your own server, a network share, or your own machine in development)**
 
 - Every app server and the machine that runs the merge job must see the same folder.
-- Vector writes as root. The job must be allowed to delete what Vector wrote: run it as root, or give
-  its user rights on the folder and on everything created in it later, for example
-  `setfacl -R -m u:1000:rwX -m d:u:1000:rwX /mnt/logs`.
+- Make it so that other users of the machine cannot enter it, and give the job's user (1000 here)
+  rights on everything that is created in it later. Vector writes as root, and the job must be allowed
+  to delete what Vector wrote:
+
+  ```sh
+  install -d -m 750 /mnt/logs /mnt/logs/parts
+  setfacl -R -m u:1000:rwX -m d:u:1000:rwX -m d:o::--- /mnt/logs
+  ```
+
+  Run the job as that user and not as root. A server that is broken into can write to the folder, so
+  the job does not follow links in it; on Linux it opens each folder in a way that cannot be swapped
+  in between.
+- Where you can, let the app servers write to `parts/` only, and not to the year folders.
 
 ### 2. Your app's containers
 
@@ -115,6 +126,13 @@ fill in the name of your bucket:
 | Google Cloud Storage | [shipper/to-gcs.yaml](shipper/to-gcs.yaml) | the service account's key file |
 | Folder | [shipper/to-folder.yaml](shipper/to-folder.yaml) | none |
 
+Copy [shipper/start](shipper/start) there too, and make the file for the keys so that only root can
+read it. Keys belong in that file and not on a command line, where other users can see them:
+
+```sh
+install -m 600 /dev/null /etc/vector/keys   # then write the keys into it, one NAME=value per line
+```
+
 Then start it. For S3-compatible storage:
 
 ```sh
@@ -123,13 +141,14 @@ docker run -d --name vector --restart unless-stopped \
   -v /etc/vector:/etc/vector:ro \
   -v /var/lib/docker/containers:/var/lib/docker/containers:ro \
   -v vector-data:/var/lib/vector \
-  timberio/vector:0.62.0-alpine \
+  --entrypoint sh timberio/vector:0.62.0-alpine /etc/vector/start \
   --config /etc/vector/vector.yaml --config /etc/vector/to-s3.yaml
 ```
 
-For Google Cloud Storage, name `to-gcs.yaml` and replace the `--env-file` line with
-`-e GOOGLE_APPLICATION_CREDENTIALS=/etc/vector/key.json`. For a folder, name `to-folder.yaml` and
-replace it with `-v /mnt/logs:/logs`.
+For Google Cloud Storage, name `to-gcs.yaml` and put
+`GOOGLE_APPLICATION_CREDENTIALS=/etc/vector/key.json` in `/etc/vector/keys`. For a folder, name
+`to-folder.yaml` and add `-v /mnt/logs/parts:/logs/parts`. `start` sees to it that other users of the
+machine cannot read what Vector writes there.
 
 Keep the `vector-data` volume: it holds Vector's position in each log file and the lines waiting to be
 sent. The first time it starts, Vector also ships what is already in the log files.
@@ -159,7 +178,7 @@ Logsafe.storage = "/mnt/logs"
 
 What follows the bucket's name goes to `Aws::S3::Resource.new` or `Google::Cloud::Storage.new` as it
 is. Without keys, each library looks where it usually does, such as `AWS_ACCESS_KEY_ID`. For storage
-of another kind, give `Logsafe.storage` an object of your own; the four methods it needs are listed in
+of another kind, give `Logsafe.storage` an object of your own; the five methods it needs are listed in
 [lib/logsafe/storage.rb](lib/logsafe/storage.rb).
 
 Then have `Logsafe::MergeJob` run **every hour**. It is a plain Active Job, so it runs on the backend
@@ -195,13 +214,35 @@ Why every hour: the first run after midnight UTC writes the day's file, and the 
 the parts, once it has found every one of their lines in that file. A run with nothing to do only
 lists the bucket.
 
+- **Name your streams** in `config/initializers/logsafe.rb`, as they are in your containers' labels:
+
+  ```ruby
+  Logsafe.streams = %w[shop-prod-web shop-prod-worker]
+  ```
+
+  Then nothing else is merged, shown on the page or encrypted again, however many other names a server
+  that was broken into makes up. A stream you forget to name is not lost: its parts stay, and every
+  run says in the worker's log which names it left alone. Without the list, every stream is taken.
 - **One app is enough.** Without arguments the job merges every stream in the storage, so one Rails app
   can do it for all your apps. If several apps run the job on the same storage, give each its own
   streams: `Logsafe::MergeJob.perform_later("shop-prod-web", "shop-prod-worker")`.
 - **It can be run again at any time.** A run that fails deletes nothing, one day that fails does not
-  hold up the others, and parts that arrive late are added to their day's file.
-- **Where it runs** it needs the `sort` and `gzip` commands, which every common Linux image has, and
-  free disk in the temporary folder for about three times a day's logs, uncompressed.
+  hold up the others, and parts that arrive late are added to their day's file. Several runs at the
+  same time do not lose each other's lines: a day's file is only replaced by a run that has read the
+  latest one. Amazon S3 and Google Cloud Storage see to that themselves, and a folder does it with a
+  lock. With an S3-compatible storage that does not know conditional writes, or a network share without
+  locks, a moment between the look and the write is left.
+- **A run ends after 50 minutes** and leaves the rest to the next one. Parts of a date more than a year
+  ago are left alone.
+- **A part that cannot be read** stays where it is. The others are merged without it, and the run
+  fails with its name, every hour until you have looked at it and removed it. That is a part that is
+  damaged, unpacks to more than 256 MB, has a line of more than 2 MB, or was encrypted with another key.
+- **A line that does not start with a time of its day** gets the start of that day in front. Vector
+  sends no such lines. What is not under `parts/<stream>/<date>/` is left alone, and counted in the
+  worker's log.
+- **Where it runs** it needs the `sort`, `gzip` and `df` commands, which every common Linux image has,
+  and free disk in the temporary folder for about four times a day's logs, uncompressed. With less
+  than that the day fails and nothing is changed, so that the disk is not filled.
   On Alpine, add `apk add coreutils` to the image: the `sort` Alpine comes with keeps the whole day
   in memory.
 - **Watch that it succeeds**, the way you watch your other jobs. A merge that fails silently leaves you
@@ -248,14 +289,17 @@ mount Logsafe::Web, at: "admin/logsafe",
 ```
 
 - **Words:** a line must hold every word you type, in any case (for the letters a to z). The first
-  eight words count.
+  eight words count, and the first 16 KB of a line, which is as much as Docker puts in one.
 - **Level:** Docker does not know a line's level, so the page looks for the word in the line: `ERROR`,
   `level=error` and `"level":"error"` are all found by "error". Lines without the word, such as the
   lines of a stack trace, are not. Rails' production logger does not print the level; give it a
   formatter that does, for example
   `config.logger = ActiveSupport::TaggedLogging.logger(STDOUT, formatter: Logger::Formatter.new)`.
 - **It shows 500 lines** at a time, with a link to the ones before. Times and days are UTC. A search
-  spans seven days at most.
+  spans seven days at most, and 50 streams: with more, choose one.
+- **A search from another website** is not run. Its words and days are filled in, and you press Search.
+  So a link to a search in a chat or a mail takes one click more. Browsers that do not say where a
+  request comes from (`Sec-Fetch-Site`) are not asked.
 - **The first search of a day waits** while the server fetches that day: its file, or for today every
   part so far. After that only new parts are fetched, and the storage is listed once a minute at
   most. A very large day can take longer than a proxy in front of your app allows. What was fetched
@@ -264,11 +308,12 @@ mount Logsafe::Web, at: "admin/logsafe",
 - **The server keeps a copy** of each day you search, in plain text, in a folder of its own in the
   temporary folder, until nobody has searched that day for 30 minutes or the app stops. An app that
   is killed leaves its copies there until the next search on that server. It needs the disk for those
-  days, uncompressed, and about three times a day's size more while it fetches one; and the `sort`,
-  `gzip`, `grep`, `awk` and `tail` commands. Each server keeps its own copies: with several servers
+  days, uncompressed, and about four times a day's size more while it fetches one; and the `sort`,
+  `gzip`, `grep`, `awk`, `cut`, `tail` and `df` commands. The copies never take more than they leave
+  free: the ones not used for longest go first. Each server keeps its own copies: with several servers
   behind a load balancer, each fetches a day the first time a search for it lands there.
-- **One stream that cannot be read**, because a part is damaged or was encrypted with another key,
-  is named on the page, and the other streams are shown.
+- **What cannot be read is named on the page**, and the rest is shown: a part that is damaged or was
+  encrypted with another key, or a stream whose day's file was.
 - **New lines** appear once Vector has shipped them and the storage is listed again: one to two
   minutes, or up to four with a folder.
 - **Run the merge job no more often than every half hour** if you use the page. A copy knows what it
@@ -280,8 +325,8 @@ mount Logsafe::Web, at: "admin/logsafe",
 
 Without a key, whoever can read the storage can read the logs. With one, they cannot read what the
 lines say: Vector encrypts every line before it leaves the server, and the merge job writes each
-day's file encrypted, as `shop-prod.2026-11-24.log.gz.enc`. The names of the files, their sizes and
-the length of each line in a part stay visible.
+day's file encrypted, as `shop-prod.2026-11-24.log.gz.enc`. The names of the files, the length of each
+line in a part and, to the nearest 64 KB, the size of a day's file stay visible.
 
 Make a key once:
 
@@ -296,23 +341,12 @@ without it cannot merge what Vector has encrypted.
 
 - **The merge job:** `Logsafe.key = ENV.fetch("LOGSAFE_KEY")` in `config/initializers/logsafe.rb`, or
   take it from your Rails credentials.
-- **Vector, on every app server:** add a line `LOGSAFE_KEY=…` to `/etc/vector/keys`, or
-  `-e LOGSAFE_KEY=…` to the `docker run` if you don't use that file. Copy
-  [shipper/start](shipper/start) to `/etc/vector/`, and [shipper/vector.yaml](shipper/vector.yaml)
-  again if yours is from before there was encryption: an older one ignores the key. Then remove the
-  running container with `docker rm -f vector` and start Vector through `start`. Removing it loses
-  nothing, the `vector-data` volume stays; `docker restart` is not enough, because it does not read
-  the key again.
-
-  ```sh
-  docker run -d --name vector --restart unless-stopped \
-    --env-file /etc/vector/keys \
-    -v /etc/vector:/etc/vector:ro \
-    -v /var/lib/docker/containers:/var/lib/docker/containers:ro \
-    -v vector-data:/var/lib/vector \
-    --entrypoint sh timberio/vector:0.62.0-alpine /etc/vector/start \
-    --config /etc/vector/vector.yaml --config /etc/vector/to-s3.yaml
-  ```
+- **Vector, on every app server:** add a line `LOGSAFE_KEY=…` to `/etc/vector/keys`. Copy
+  [shipper/start](shipper/start) and [shipper/vector.yaml](shipper/vector.yaml) again if yours are from
+  before there was encryption: an older `vector.yaml` ignores the key. Then remove the running
+  container with `docker rm -f vector` and start it again with the same `docker run` as in Setup.
+  Removing it loses nothing, the `vector-data` volume stays; `docker restart` is not enough, because
+  it does not read the key again.
 
   **Check each server:** a minute or two later, every line in its newest parts starts with `enc:`. A
   server you missed keeps sending plain text, and nothing else will tell you.
@@ -325,12 +359,12 @@ aws s3 cp s3://my-logs/2026/11/shop-prod.2026-11-24.log.gz.enc day.enc
 logsafe decrypt day.enc | gzip -dc | grep "OrdersController"
 ```
 
-Today's lines, from the parts, need the stream and the day as well. In a folder the parts are not
-compressed: use `cat` in place of `gzip -dc`.
+Today's lines, from the parts, need the stream and the day as well. A part that cannot be read is
+named, and the others are printed.
 
 ```sh
 aws s3 cp s3://my-logs/parts/shop-prod/$(date -u +%F)/ today --recursive
-gzip -dc today/* | logsafe decrypt shop-prod $(date -u +%F) | LC_ALL=C sort | less
+logsafe decrypt shop-prod $(date -u +%F) today/* | LC_ALL=C sort | less
 ```
 
 - **A key that is not one stops Vector from starting.** `start` checks that `LOGSAFE_KEY` is 32 bytes
@@ -346,12 +380,20 @@ gzip -dc today/* | logsafe decrypt shop-prod $(date -u +%F) | LC_ALL=C sort | le
 - **Parts take more room.** An encrypted line hardly compresses, so a day's parts are about as large
   as its logs, uncompressed, until the day is merged. A day's file is compressed before it is
   encrypted and stays small.
-- **What is encrypted cannot be changed unnoticed.** `logsafe decrypt` and the merge job refuse an
-  encrypted file or line that was changed, or that another key encrypted. It promises no more than
-  that: someone who can write to the storage can still add plain lines, or put one day's encrypted
-  file in the place of another's.
+- **What is encrypted cannot be changed unnoticed.** `logsafe decrypt`, the page and the merge job
+  refuse an encrypted file or line that was changed, that another key encrypted, or that belongs to
+  another stream or day, and a file that is named as encrypted and is not. It promises no more than
+  that: someone who can write to the storage can still add plain lines of their own, remove files, or
+  put back an earlier version of the same day's file.
+- **How well lines compress can say something about them.** Someone who can add lines and see the sizes
+  of the files could guess at what other lines of that day say, one merge at a time, because similar
+  lines compress together. Sizes are rounded to 64 KB, which makes that slow and not impossible. Keep
+  secrets out of the logs, encrypted or not.
+- **The key is on every app server.** A server that is broken into has it, and with it can read
+  whatever of the storage it can reach. Keep the server's storage key write-only, as in Setup.
 - **One storage, one key.** Every app that merges in this storage needs the same key, and the job
-  that encrypts what is already there takes everything in it, whichever app's streams they are.
+  that encrypts what is already there takes everything in it, whichever app's streams they are, unless
+  `Logsafe.streams` names the ones that are yours.
 - **Earlier versions stay as they were.** If the bucket keeps versions, as Setup recommends, then
   whatever was replaced or removed is still there as an earlier version, in plain text or under an
   old key, until your lifecycle rule removes it. Remove those versions yourself if the plain text
@@ -393,7 +435,7 @@ file, ChaCha20-Poly1305 for a line.
   back from the storage, and removes the plain one once every line of it is found there.
 - **A line can still arrive under the old key** after the job has run: from a server you had not
   given the new key yet, or from lines Vector was holding while the storage was down. Nothing is
-  lost. The merge of that day fails and says so, and its parts stay until the old key is back in
+  lost. The merge of that day says so and fails, and those parts stay until the old key is back in
   `Logsafe.old_keys` and the merge has run again.
 - **`logsafe decrypt`** takes old keys from `LOGSAFE_OLD_KEYS`.
 
@@ -442,7 +484,6 @@ change it describes.
   file, Vector is restarted on the way, and the merge must end with one complete, sorted file.
 - The S3 and Google Cloud Storage code against local stand-ins.
 - Vector's own tests of how lines are rewritten, and the validity of all three storage files.
-
 - The whole path once more with a key, for the S3 stand-in: the parts hold only encrypted lines, and
   the merge job opens what Vector encrypted.
 - `shipper/start` with keys that are not keys, with a key and with none.
@@ -452,7 +493,10 @@ fails, today left alone, encryption with a right, a wrong and a missing key, a c
 everything encrypted again, plain files and lines encrypted afterwards, the jobs through Active
 Job, and the page in the browser as a Rack app: its searches, an address that was made up, a fetch
 that is cut off, a part that is removed meanwhile, two searches for one day, and the removal of its
-copies.
+copies. And what someone could do who may write parts, or to the storage: parts that unpack to very
+much or cannot be read, lines of another day, streams and dates that were made up, links in a folder,
+encrypted files that were swapped, and searches that another website starts. Several runs at the same
+time, with each kind of storage.
 
 Not run: the page mounted in a Rails app, and the routing examples for it; real AWS, Google or
 DigitalOcean storage; Vector sending to Google Cloud Storage (the stand-in

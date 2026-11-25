@@ -6,8 +6,8 @@
 # that label into its log file:
 #   docker run --label logs=shop-prod-web --log-opt labels=logs ...
 #
-# To encrypt the lines, give Vector the key the app has in Logsafe.key, as LOGSAFE_KEY, and start
-# Vector with the `start` script beside this file: it refuses a key that is not one.
+# To encrypt the lines, give Vector the key the app has in Logsafe.key, as LOGSAFE_KEY. Start Vector
+# with the `start` script beside this file: it refuses a key that is not one.
 
 data_dir: /var/lib/vector # where Vector remembers how far it has read, and buffers
 
@@ -33,8 +33,9 @@ transforms:
       }
       if !is_string(stream) { abort } # a container without the label
       # The name becomes a folder under parts/: with a slash in it the merge would never find the
-      # lines, and with dots in front they could land outside. Kept where they are seen instead.
-      if !match(string!(stream), r'^[A-Za-z0-9][A-Za-z0-9._-]*$') { stream = "unparsed" }
+      # lines, with dots in front they could land outside, and too long a name is too long for the
+      # day's file. Kept where they are seen instead.
+      if !match(string!(stream), r'^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') { stream = "unparsed" }
 
       # The time Docker saw the line, at a fixed width, so sorting the text sorts by time.
       at = parse_timestamp(entry.time, "%+") ?? now()
