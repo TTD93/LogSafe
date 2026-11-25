@@ -15,6 +15,7 @@ RSpec.describe Logsafe::Web do
 
   after do
     Logsafe.key = nil
+    Logsafe.streams = nil
     FileUtils.rm_rf([root, copies])
   end
 
@@ -26,9 +27,9 @@ RSpec.describe Logsafe::Web do
     File.utime(Time.now - 600, Time.now - 600, path)
   end
 
-  def get(query = {})
+  def get(query = {}, env = {})
     query = URI.encode_www_form(query) unless query.is_a?(String)
-    status, headers, body = described_class.call("REQUEST_METHOD" => "GET", "QUERY_STRING" => query)
+    status, headers, body = described_class.call({ "REQUEST_METHOD" => "GET", "QUERY_STRING" => query }.merge(env))
     expect(headers).not_to be_frozen # Rack::ETag and others write to them
     [status, body.join]
   end
@@ -133,10 +134,11 @@ RSpec.describe Logsafe::Web do
   it "deletes its copy of a day that nobody looked at for half an hour" do
     part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
     shown(day("2026-11-20"))
-    expect(Dir.children(copies).map { |name| File.extname(name) }).to contain_exactly(".keys", ".lock", ".log")
+    kinds = Dir.children(copies).map { |name| File.extname(name) }
+    expect(kinds).to contain_exactly(".keys", ".lock", ".log", ".unread")
 
     Logsafe::Copies.sweep
-    expect(Dir.children(copies).size).to eq 3
+    expect(Dir.children(copies).size).to eq 4
 
     FileUtils.mkdir(File.join(copies, "abc123.left-by-a-search-that-was-cut-off"))
     Dir.children(copies).each { |name| File.utime(Time.now - 1801, Time.now - 1801, File.join(copies, name)) }
@@ -158,17 +160,142 @@ RSpec.describe Logsafe::Web do
 
   it "goes on from where a fetch was cut off" do
     stub_const("Logsafe::Copies::SLICE", 1)
-    allow(Logsafe.storage).to receive(:fetch).and_call_original
     part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
-    part "web/2026-11-20/b.log.gz", "not gzip"
-    File.binwrite(File.join(root, "parts/web/2026-11-20/b.log.gz"), "\x1F\x8Bbroken".b)
-    File.utime(Time.now - 600, Time.now - 600, File.join(root, "parts/web/2026-11-20/b.log.gz"))
-    expect(get(day("2026-11-20")).last).to include "b.log.gz cannot be read"
+    part "web/2026-11-20/b.log", "2026-11-20T10:00:00.000000002Z b1"
+    fetched = []
+    allow(Logsafe.storage).to receive(:fetch).and_wrap_original do |fetch, key, path|
+      fetched << key
+      raise Logsafe::Full, "no room" if key.end_with?("b.log") && fetched.size == 2
 
-    part "web/2026-11-20/b.log.gz", "2026-11-20T10:00:00.000000002Z b1"
+      fetch.call(key, path)
+    end
+    expect(get(day("2026-11-20")).last).to include "no room"
 
     expect(shown(day("2026-11-20"))).to eq %w[a1 b1]
-    expect(Logsafe.storage).to have_received(:fetch).exactly(3).times # a once, b twice
+    expect(fetched.map { |key| File.basename(key) }).to eq %w[a.log b.log b.log]
+  end
+
+  it "shows a stream without the part that cannot be read, says so, and does not fetch that one again" do
+    allow(Logsafe.storage).to receive(:fetch).and_call_original
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    part "web/2026-11-20/b.log", "enc:junk"
+
+    2.times do
+      expect(shown(day("2026-11-20"))).to eq ["a1"]
+      expect(get(day("2026-11-20")).last)
+        .to include "web 2026-11-20: 1 of its parts cannot be read. parts/web/2026-11-20/b.log"
+    end
+    expect(Logsafe.storage).to have_received(:fetch).twice
+  end
+
+  it "has no trouble with a line that is not text, however it is looked for" do
+    stub_const("Logsafe::Search::LIMIT", 1)
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z first",
+         "2026-11-20T10:00:00.000000002Z \xFF\xFE second"
+
+    page = get(day("2026-11-20")).last
+    expect(page).to include "second"
+    expect(shown(CGI.unescapeHTML(page[/href="\?(.+?)">Show older/, 1]))).to eq ["first"]
+    expect(shown(day("2026-11-20", q: "SECOND"))).to eq ["\uFFFD\uFFFD second"]
+  end
+
+  it "pages through lines of one time without leaving any out" do
+    stub_const("Logsafe::Search::LIMIT", 2)
+    lines = %w[a b c d e].map { |text| "2026-11-20T10:00:00.000000005Z #{text}" }
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z before", *lines
+    part "worker/2026-11-20/a.log", "2026-11-20T10:00:00.000000005Z bb"
+
+    query = day("2026-11-20")
+    pages = Array.new(4) do
+      page = get(query).last
+      query = CGI.unescapeHTML(page[/href="\?(.+?)">Show older/, 1].to_s)
+      page.scan(%r{</b> (.*?)</li>}).flatten
+    end
+    expect(pages).to eq [%w[d e], %w[bb c], %w[a b], ["before"]]
+  end
+
+  it "keeps a line short, and the page with it" do
+    stub_const("Logsafe::Copies::WIDTH", 40)
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z #{"x" * 5000}"
+
+    expect(shown(day("2026-11-20"))).to eq ["x" * 9]
+  end
+
+  it "does not search for another website, but shows what would be searched for" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    allow(Logsafe.storage).to receive(:keys).and_call_original
+
+    %w[cross-site same-site].each do |site|
+      page = get(day("2026-11-20", q: "a1"), "HTTP_SEC_FETCH_SITE" => site).last
+      expect(page).to include("Press Search to run it", 'value="a1"', 'value="2026-11-20"')
+    end
+    expect(Logsafe.storage).not_to have_received(:keys)
+    expect(get(day("2026-11-20", q: "a1"), "HTTP_SEC_FETCH_SITE" => "same-origin").last).to include "<mark>a1</mark>"
+  end
+
+  it "asks for a stream when there are very many" do
+    stub_const("Logsafe::Search::STREAMS", 1)
+    %w[web worker].each { |stream| part "#{stream}/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z #{stream}" }
+
+    expect(get(day("2026-11-20")).last).to include "There are 2 streams in these days. Choose one."
+    expect(shown(day("2026-11-20", stream: "web"))).to eq ["web"]
+  end
+
+  it "shows only the streams there are, when it was told which" do
+    %w[web made-up].each { |stream| part "#{stream}/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z #{stream}" }
+    Logsafe.merge("made-up", today: "2026-11-22")
+    Logsafe.streams = ["web"]
+
+    expect(shown(day("2026-11-20"))).to eq ["web"]
+    expect(get(day("2026-11-20")).last).not_to include "made-up"
+  end
+
+  it "does not give the words to a command where other users see them, and takes eight of them at most" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a secret"
+    commands = []
+    allow(Open3).to receive(:pipeline_r).and_wrap_original do |run, *filters, **options, &block|
+      commands.concat(filters.flatten)
+      run.call(*filters, **options, &block)
+    end
+
+    expect(shown(day("2026-11-20", q: "secret #{"a " * 2000}"))).to eq ["a secret"]
+    expect(commands).not_to include(/secret/)
+    expect(described_class.new({ "q" => ("a".."z").to_a.join(" ") }).instance_variable_get(:@words).size).to eq 8
+  end
+
+  it "says so when a search could not be finished" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
+    stub_const("Logsafe::Search::LEVELS", { "error" => "(" }) # not a pattern: grep fails
+
+    expect(get(day("2026-11-20", level: "error")).last).to include "web 2026-11-20: the search failed"
+  end
+
+  it "makes room by deleting the copies that were not used for longest" do
+    part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z #{"x" * 900}"
+    part "web/2026-11-21/a.log", "2026-11-21T10:00:00.000000001Z #{"y" * 900}"
+    shown(day("2026-11-20"))
+    old = Dir.glob(File.join(copies, "*.log")).first
+    File.utime(Time.now - 60, Time.now - 60, old)
+    allow(Logsafe::Room).to receive(:free).and_return(1 << 40)
+    allow(Logsafe::Room).to receive(:free).with(copies).and_return(100)
+
+    expect(shown(day("2026-11-21")).first).to start_with "y"
+    expect(File.exist?(old)).to be false
+  end
+
+  it "has a folder of its own when someone else has taken the usual one" do
+    allow(Logsafe::Copies).to receive(:dir).and_call_original
+    Dir.mktmpdir("logsafe-tmp") do |tmp|
+      allow(Dir).to receive(:tmpdir).and_return(tmp)
+      usual = File.join(tmp, "logsafe-web-#{Process.uid}")
+      expect(Logsafe::Copies.dir).to eq usual
+
+      FileUtils.chmod(0o777, usual)
+      expect(Logsafe::Copies.dir).to start_with(File.join(tmp, "logsafe-web-")).and(satisfy { |dir| dir != usual })
+      expect(File.stat(Logsafe::Copies.dir).mode & 0o077).to eq 0
+    end
+  ensure
+    Logsafe::PrivateFolder.instance_variable_set(:@own, nil)
   end
 
   it "says so when another search is fetching the same day, and does not wait for it" do
@@ -193,10 +320,17 @@ RSpec.describe Logsafe::Web do
     expect(get(day("2026-11-20")).last).to include "the storage changed while it was read"
   end
 
-  it "leaves an error of the storage to the app" do
+  it "shows the rest when the storage will not give a file, and leaves it to the app when it will not answer" do
     part "web/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z a1"
-    allow(Logsafe.storage).to receive(:fetch).and_raise(IOError, "network")
+    part "worker/2026-11-20/a.log", "2026-11-20T10:00:00.000000001Z w1"
+    allow(Logsafe.storage).to receive(:fetch).and_call_original
+    allow(Logsafe.storage).to receive(:fetch).with(/web/, anything).and_raise(IOError, "archived")
 
+    page = get(day("2026-11-20")).last
+    expect(page).to include "web 2026-11-20: 1 of its parts cannot be read", "IOError: archived"
+    expect(shown(day("2026-11-20"))).to eq ["w1"]
+
+    allow(Logsafe.storage).to receive(:keys).and_raise(IOError, "network")
     expect { get(day("2026-11-20")) }.to raise_error(IOError)
   end
 

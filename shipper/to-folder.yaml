@@ -1,5 +1,6 @@
 # A folder: a disk on this server, a mounted volume or a network share.
-# Mount the folder into the Vector container at /logs.
+# Mount the folder's parts/ into the Vector container at /logs/parts, and start Vector with `start`:
+# what it writes is then not for everyone on the machine to read.
 sinks:
   storage:
     type: file

@@ -3,11 +3,12 @@
 
 require "logsafe"
 require "tempfile"
+require "tmpdir"
 
 USAGE = <<~TEXT
   logsafe key                               prints a new key
   logsafe decrypt FILE | gzip -dc           prints a day's file
-  ... | logsafe decrypt STREAM YYYY-MM-DD   prints the lines of that stream's and day's parts
+  logsafe decrypt STREAM YYYY-MM-DD PART…   prints the lines of these parts of that stream and day
   The key to decrypt with comes from LOGSAFE_KEY, and keys that were in use before from LOGSAFE_OLD_KEYS.
 TEXT
 
@@ -26,10 +27,21 @@ begin
       Logsafe.decrypt(file, gzip.path)
       IO.copy_stream(gzip.path, $stdout)
     end
-  in ["decrypt", stream, day]
+  in ["decrypt", stream, day, *parts] if parts.any? && day.match?(Logsafe::DATE)
     use_keys.call
-    line_keys = Logsafe::Cipher.day_keys(Logsafe.keys, stream, day)
-    $stdin.each_line { |line| $stdout << Logsafe::Cipher.plain(line, line_keys) }
+    source = Logsafe::Source.new(stream, day, Logsafe.keys)
+    # Each part by itself, so that one that cannot be read, or that ends in the middle of a line, takes
+    # nothing from the others.
+    read = parts.map do |part|
+      Dir.mktmpdir("logsafe") do |dir|
+        FileUtils.cp(part, copy = File.join(dir, "part"))
+        source.part(copy)
+        IO.copy_stream(copy, $stdout)
+      end
+    rescue Logsafe::Error => e
+      warn "#{part}: #{e.message}"
+    end
+    exit 1 unless read.all?
   else
     abort USAGE
   end
