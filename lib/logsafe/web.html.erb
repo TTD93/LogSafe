@@ -51,11 +51,16 @@
 <%- if @cut -%>
     <p class="note">A search spans <%= MAX_DAYS %> days at most, so this one starts on <%= @from %>.</p>
 <%- end -%>
-<%- if @lines.empty? && @problems.empty? -%>
+<%- if @waiting -%>
+    <p class="note">This search was opened from another site. Press Search to run it.</p>
+<%- elsif @lines.empty? && @problems.empty? -%>
     <p class="note"><%= @streams.empty? ? "The storage has no logs for these days." : "No lines match. Try fewer words, another level or other days." %></p>
 <%- end -%>
-<%- if older -%>
-    <a class="turn" href="<%= h(older) %>">Show older lines</a>
+<%- if @crowded -%>
+    <p class="note">More than <%= Search::SAME %> lines have the time <%= h(@crowded) %>. To see the rest of them, search for a word they hold.</p>
+<%- end -%>
+<%- if @older -%>
+    <a class="turn" href="<%= h(@older) %>">Show older lines</a>
 <%- end -%>
     <ol>
 <%- @lines.each do |stream, line| -%>
@@ -64,7 +69,7 @@
 <%- end -%>
     </ol>
 <%- if @before -%>
-    <a class="turn" href="<%= h(link(before: nil)) %>">Back to the newest lines</a>
+    <a class="turn" href="<%= h(link) %>">Back to the newest lines</a>
 <%- end -%>
   </div>
 </main>

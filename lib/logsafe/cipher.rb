@@ -5,7 +5,12 @@ require "securerandom"
 
 module Logsafe
   # What the key seals, and how.
-  # A day's file is its gzip under AES-256-GCM: "logsafe1", a 12-byte nonce, the sealed gzip, a 16-byte tag.
+  # A day's file is its gzip under AES-256-GCM: "logsafe1", the length (2 bytes) and text of
+  # "<stream>/<day>", a 12-byte nonce, what is sealed, a 16-byte tag. The name is sealed along with it,
+  # so that one day's file cannot pass for another's. What is sealed is the gzip, zeros up to a multiple
+  # of PAD, and the gzip's length in the last 8 bytes: the size of the file then says little about what
+  # is in it. Someone who can add lines of their own could otherwise tell from how well they compress
+  # whether they are like the others.
   # A line the shipper sealed (shipper/vector.yaml) is "enc:" and then, in Base64, a 12-byte nonce, the
   # line under ChaCha20-Poly1305 and a 16-byte tag. A line's key is not the key itself but
   # HMAC-SHA256(key, "<stream>/<day>"): so few lines share a key that the shipper's random nonces are
@@ -18,7 +23,7 @@ module Logsafe
     LINE = "enc:"
     NONCE = 12
     TAG = 16
-    HEAD = MAGIC.bytesize + NONCE
+    PAD = 64 << 10
     NO_KEY = "this is encrypted and Logsafe.key is not set"
     NOT_OURS = "was not encrypted with this key or an old one, or has been changed"
 
@@ -39,34 +44,32 @@ module Logsafe
         keys.map { |key| OpenSSL::HMAC.digest("SHA256", key, "#{stream}/#{day}") }
       end
 
-      def sealed?(path)
-        File.binread(path, MAGIC.bytesize) == MAGIC
-      end
-
-      # Returns the path of the sealed file.
-      def seal(from, into, key)
+      # Returns the path of the sealed file. name is "<stream>/<day>".
+      def seal(from, into, key, name)
         cipher = cipher("aes-256-gcm", :encrypt, key)
         File.open(into, "wb") do |out|
-          out << MAGIC << cipher.random_iv
-          File.open(from, "rb") { |file| pump(cipher, file, out, file.size) }
+          out << (head = head_of(name)) << cipher.random_iv
+          cipher.auth_data = head
+          File.open(from, "rb") { |file| pump(cipher, file, out, file.size) << cipher.update(padding(file.size)) }
           out << cipher.final << cipher.auth_tag
         end
         into
       end
 
       # Returns the path of the opened file. Fails, and leaves nothing behind, unless the whole file is
-      # what one of the keys sealed.
-      def unseal(from, into, keys)
-        fit(keys, "the file #{NOT_OURS}") { |key| open_file(from, into, key) }
+      # what one of the keys sealed, and under this name if one is given.
+      def unseal(from, into, keys, name = nil)
+        fit(keys, "the file #{NOT_OURS}") { |key| open_file(from, into, key, name) }
       rescue Error
         FileUtils.rm_f(into)
         raise
       end
 
-      # The text of one sealed line, given what follows LINE.
+      # The text of one sealed line, given what follows LINE. Strict about the Base64: what follows its
+      # end would otherwise be dropped unseen.
       def line(payload, keys)
-        data = payload.unpack1("m")
         fit(keys, "a line #{NOT_OURS}") do |key|
+          data = payload.unpack1("m0")
           cipher = cipher("chacha20-poly1305", :decrypt, key, data[0, NONCE], data[-TAG..])
           cipher.update(data[NONCE...-TAG]) + cipher.final
         end
@@ -81,7 +84,7 @@ module Logsafe
 
       # A line as it was before the shipper sealed it; a line that was never sealed, as it is.
       def plain(line, keys)
-        line.start_with?(LINE) ? "#{line(line.delete_prefix(LINE), keys)}\n" : line
+        line.start_with?(LINE) ? "#{line(line.delete_prefix(LINE).delete_suffix("\n"), keys)}\n" : line
       end
 
       private
@@ -98,15 +101,48 @@ module Logsafe
         raise Error, failure
       end
 
-      def open_file(from, into, key)
+      def open_file(from, into, key, name)
         File.open(from, "rb") do |file|
-          body = file.size - HEAD - TAG
-          raise ArgumentError unless file.read(MAGIC.bytesize) == MAGIC && body >= 0
+          head = head(file, name)
+          nonce = file.read(NONCE)
+          body = file.size - file.pos - TAG
+          raise ArgumentError if body < 8
 
-          cipher = cipher("aes-256-gcm", :decrypt, key, file.read(NONCE), file.pread(TAG, HEAD + body))
+          cipher = cipher("aes-256-gcm", :decrypt, key, nonce, file.pread(TAG, file.size - TAG))
+          cipher.auth_data = head
           File.open(into, "wb") { |out| pump(cipher, file, out, body) << cipher.final }
         end
-        into
+        trim(into)
+      end
+
+      # What comes before the nonce.
+      def head_of(name)
+        MAGIC + [name.bytesize].pack("n") + name.b
+      end
+
+      def head(file, name)
+        magic = file.read(MAGIC.bytesize)
+        length = file.read(2).to_s.unpack1("n")
+        raise ArgumentError unless magic == MAGIC && length
+
+        found = file.read(length).to_s
+        raise ArgumentError unless found.bytesize == length
+        raise Error, "this is the file of #{found.inspect}, not of #{name}" if name && found != name.b
+
+        head_of(found)
+      end
+
+      def padding(size)
+        ("\0" * (-(size + 8) % PAD)) + [size].pack("Q>")
+      end
+
+      # Back to what was sealed, without its padding.
+      def trim(path)
+        File.open(path, "r+b") do |file|
+          size = file.pread(8, file.size - 8).unpack1("Q>")
+          size <= file.size - 8 ? file.truncate(size) : raise(ArgumentError)
+        end
+        path
       end
 
       # To open something, with its nonce and tag. A tag that is missing fails like one that is wrong.
