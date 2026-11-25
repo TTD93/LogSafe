@@ -8,16 +8,22 @@ module Logsafe
   #   fetch(key, path)  copy the key's content to a local file; called from several threads at once
   #   store(path, key)  copy a local file to the key
   #   delete(keys)
+  # and says in to_s which storage it is, when one machine reads from more than one.
   module Storage
     # Copies the keys to files in dir, several at a time: a day can be more than a thousand parts.
-    # Returns the paths, in the order of the keys. Stops at the first key that fails, and raises what it raised.
+    # Gives each key and its file to the block, in the thread that fetched it, for work that can be
+    # done side by side. Returns the paths, in the order of the keys. Stops at the first key that
+    # fails, and raises what it raised.
     def self.fetch(storage, keys, dir)
       paths = keys.each_index.map { |index| File.join(dir, "source#{index}") }
       jobs = Queue.new(keys.zip(paths)).close
       failure = nil
-      Array.new(8) do
+      Array.new([8, keys.size].min) do
         Thread.new do
-          while (job = jobs.pop) do storage.fetch(*job) end
+          while (job = jobs.pop)
+            storage.fetch(*job)
+            yield(*job)
+          end
         rescue StandardError => e
           jobs.clear
           failure ||= e
@@ -42,6 +48,11 @@ module Logsafe
 
       def initialize(root)
         @root = root
+      end
+
+      # Which storage this is, for what is kept from it on this machine. The same below.
+      def to_s
+        "folder:#{File.expand_path(@root)}"
       end
 
       def keys(prefix)
@@ -94,8 +105,14 @@ module Logsafe
         @bucket.objects(prefix:).map(&:key)
       end
 
+      def to_s
+        "s3:#{@bucket.client.config.endpoint}/#{@bucket.name}"
+      end
+
+      # In one request: left to itself the library asks for the size first, twice the requests for a
+      # day's thousand parts. A file of several GB comes in one piece too, which is slower but works.
       def fetch(key, path)
-        transfer.download_file(path, bucket: @bucket.name, key:)
+        transfer.download_file(path, bucket: @bucket.name, key:, mode: "single_request")
       end
 
       def store(path, key)
@@ -130,6 +147,10 @@ module Logsafe
 
       def keys(prefix)
         @bucket.files(prefix:).all.map(&:name)
+      end
+
+      def to_s
+        "gcs:#{@bucket.name}"
       end
 
       def fetch(key, path)
