@@ -66,6 +66,8 @@ Solid Queue, Sidekiq, GoodJob, Resque, or cron.
 
 Give each container a `logs` label with its stream name, tell Docker to write that label into the log
 file, and limit the size of the log files. Containers without the label are not shipped.
+A stream name is made of letters, digits, `.`, `_` and `-`, and starts with a letter or a digit.
+Lines with any other name end up in the stream `unparsed`.
 
 ```sh
 docker run --label logs=shop-prod \
@@ -200,6 +202,8 @@ lists the bucket.
   hold up the others, and parts that arrive late are added to their day's file.
 - **Where it runs** it needs the `sort` and `gzip` commands, which every common Linux image has, and
   free disk in the temporary folder for about three times a day's logs, uncompressed.
+  On Alpine, add `apk add coreutils` to the image: the `sort` Alpine comes with keeps the whole day
+  in memory.
 - **Watch that it succeeds**, the way you watch your other jobs. A merge that fails silently leaves you
   with parts, not with nothing, but the parts keep piling up.
 
@@ -258,7 +262,8 @@ mount Logsafe::Web, at: "admin/logsafe",
   is kept, a thousand parts at a time, so load the page again and it goes on from there. While one
   search fetches a day, another search for the same day is told so and does not wait.
 - **The server keeps a copy** of each day you search, in plain text, in a folder of its own in the
-  temporary folder, until nobody has searched that day for 30 minutes. It needs the disk for those
+  temporary folder, until nobody has searched that day for 30 minutes or the app stops. An app that
+  is killed leaves its copies there until the next search on that server. It needs the disk for those
   days, uncompressed, and about three times a day's size more while it fetches one; and the `sort`,
   `gzip`, `grep`, `awk` and `tail` commands. Each server keeps its own copies: with several servers
   behind a load balancer, each fetches a day the first time a search for it lands there.

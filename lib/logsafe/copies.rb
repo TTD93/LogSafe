@@ -6,7 +6,8 @@ module Logsafe
   # To search a day this machine needs its lines in plain text. So the day's file and its parts are
   # fetched and decrypted once, into a folder only this user can read, and the copy is kept while it
   # is in use: a later search fetches only what the storage has and the copy does not. A copy nobody
-  # used for KEEP seconds is deleted, by the next search and by a thread of this process.
+  # used for KEEP seconds is deleted, by the next search and by a thread of this process, and every
+  # copy when this process ends.
   # A copy knows what it holds by the names of the keys. So KEEP is shorter than the hour between two
   # merges: a part that arrives late is listed for at least that hour, and a copy either sees it or
   # is gone before the part is. Merges less than KEEP apart can make a copy miss such a part.
@@ -30,21 +31,26 @@ module Logsafe
         log
       end
 
-      # Deletes what was not used for KEEP seconds, and what a search that was cut off left behind.
+      # Deletes what was not used for this many seconds, and what a search that was cut off left behind.
       # What a search is working on is left alone.
-      def sweep
+      def sweep(unused_for = KEEP)
         Dir.children(dir).grep_v(/\.lock\z/).each do |name|
           path = File.join(dir, name)
-          locked(name[/\A\h+/], 0) { FileUtils.rm_rf(path) if File.mtime(path) < Time.now - KEEP }
+          locked(name[/\A\h+/], 0) { FileUtils.rm_rf(path) if File.mtime(path) <= Time.now - unused_for }
         rescue Errno::ENOENT
           next # another process was first
         end
       end
 
       # Sweeps now, and from then on without a search having to come: the last copies must not stay.
+      # Nor may they outlive the process: when it ends, every copy goes, and another process that
+      # shares the folder fetches again. A fork has no thread, but it has its parent's at_exit.
       def tidy
         sweep
-        @sweeper = Thread.new { loop { sleep(KEEP / 6) && sweep } } unless @sweeper&.alive?
+        return if @sweeper&.alive?
+
+        at_exit { sweep(0) } unless @sweeper
+        @sweeper = Thread.new { loop { sleep(KEEP / 6) && sweep } }
       end
 
       # Where the copies are. For this user alone, and not taken over from anyone else.
